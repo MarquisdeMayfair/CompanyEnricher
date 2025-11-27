@@ -1,0 +1,27 @@
+# CSV data files - too large for git
+*.csv
+
+# Other data files
+*.xlsx
+*.zip
+*.pdf
+
+# Environment variables (contains API keys)
+.env
+
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+
+# Test files
+static/test-upload.html
+

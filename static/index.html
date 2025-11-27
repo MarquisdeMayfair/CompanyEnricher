@@ -1,0 +1,1896 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Company Data Enrichment</title>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0a0a0f;
+            --bg-card: #12121a;
+            --bg-card-hover: #1a1a25;
+            --border: #2a2a3a;
+            --accent: #00d4aa;
+            --accent-dim: #00a385;
+            --accent-glow: rgba(0, 212, 170, 0.15);
+            --text: #e8e8ed;
+            --text-dim: #8888a0;
+            --warning: #ffaa00;
+            --error: #ff4466;
+            --success: #00d4aa;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'DM Sans', -apple-system, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        
+        .bg-pattern {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(ellipse at 20% 0%, rgba(0, 212, 170, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 100%, rgba(0, 100, 80, 0.06) 0%, transparent 50%),
+                repeating-linear-gradient(
+                    0deg,
+                    transparent,
+                    transparent 100px,
+                    rgba(42, 42, 58, 0.03) 100px,
+                    rgba(42, 42, 58, 0.03) 101px
+                ),
+                repeating-linear-gradient(
+                    90deg,
+                    transparent,
+                    transparent 100px,
+                    rgba(42, 42, 58, 0.03) 100px,
+                    rgba(42, 42, 58, 0.03) 101px
+                );
+            pointer-events: none;
+            z-index: 0;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 40px 24px;
+            position: relative;
+            z-index: 1;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 48px;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--text) 0%, var(--accent) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 12px;
+            letter-spacing: -0.02em;
+        }
+        
+        .subtitle {
+            color: var(--text-dim);
+            font-size: 1.1rem;
+        }
+        
+        .filters-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 32px;
+            margin-bottom: 32px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+        }
+        
+        .filters-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        label {
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+        }
+        
+        select, input {
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px 16px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 1rem;
+            transition: all 0.2s ease;
+        }
+        
+        select:focus, input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+        
+        select {
+            cursor: pointer;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%238888a0'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            background-size: 20px;
+            padding-right: 44px;
+        }
+        
+        .btn-row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 600;
+            padding: 14px 28px;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
+            color: var(--bg-dark);
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 212, 170, 0.3);
+        }
+        
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        
+        .btn-secondary {
+            background: var(--bg-dark);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        
+        .btn-secondary:hover {
+            border-color: var(--accent);
+            background: var(--bg-card-hover);
+        }
+        
+        .btn-verify {
+            background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+            color: white;
+            border: none;
+        }
+        
+        .btn-verify:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(139, 92, 246, 0.3);
+        }
+        
+        .btn-verify:disabled {
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .file-upload-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .file-upload-btn:hover {
+            border-color: var(--accent);
+            background: var(--bg-card-hover);
+        }
+        
+        .file-input-wrapper {
+            display: inline-block;
+        }
+        
+        .file-input-styled {
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text);
+            cursor: pointer;
+        }
+        
+        .file-input-styled::file-selector-button {
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 600;
+            padding: 14px 28px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--bg-dark);
+            color: var(--text);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-right: 0;
+        }
+        
+        .file-input-styled::file-selector-button:hover {
+            border-color: var(--accent);
+            background: var(--bg-card-hover);
+        }
+        
+        .file-input-styled::-webkit-file-upload-button {
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 600;
+            padding: 14px 28px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--bg-dark);
+            color: var(--text);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-right: 0;
+        }
+        
+        .file-input-styled::-webkit-file-upload-button:hover {
+            border-color: var(--accent);
+            background: var(--bg-card-hover);
+        }
+        
+        .stats-bar {
+            display: flex;
+            gap: 32px;
+            flex-wrap: wrap;
+            padding: 20px 0;
+            border-top: 1px solid var(--border);
+            margin-top: 24px;
+        }
+        
+        .stat {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .stat-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--accent);
+        }
+        
+        .stat-value.stat-valid {
+            color: #22c55e;
+        }
+        
+        .stat-value.stat-invalid {
+            color: #ef4444;
+        }
+        
+        .stat-value.stat-risky {
+            color: #f59e0b;
+        }
+        
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .results-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+        }
+        
+        .results-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        
+        .results-header h2 {
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+        
+        .table-container {
+            overflow-x: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th, td {
+            padding: 14px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        th {
+            background: var(--bg-dark);
+            font-weight: 600;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+            position: sticky;
+            top: 0;
+        }
+        
+        tr:hover {
+            background: var(--bg-card-hover);
+        }
+        
+        .company-name {
+            font-weight: 600;
+            color: var(--text);
+        }
+        
+        .company-number {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }
+        
+        .sic-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            background: var(--accent-glow);
+            color: var(--accent);
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        .status-active {
+            color: var(--success);
+        }
+        
+        .status-inactive {
+            color: var(--error);
+        }
+        
+        .directors-list {
+            font-size: 0.9rem;
+        }
+        
+        .director-item {
+            padding: 4px 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .director-item::before {
+            content: '→';
+            color: var(--accent);
+            font-size: 0.75rem;
+        }
+        
+        .email-item {
+            padding: 4px 0;
+            font-size: 0.85rem;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        .email-link {
+            color: var(--accent);
+            text-decoration: none;
+            transition: opacity 0.2s;
+        }
+        
+        .email-link:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+        
+        .email-meta {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 2px;
+        }
+        
+        .email-source {
+            font-size: 0.65rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+        
+        .verification-badge {
+            font-size: 0.65rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        
+        .verification-valid {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+        }
+        
+        .verification-invalid {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+        
+        .verification-risky {
+            background: rgba(245, 158, 11, 0.2);
+            color: #f59e0b;
+        }
+        
+        .verification-unknown {
+            background: rgba(156, 163, 175, 0.2);
+            color: #9ca3af;
+        }
+        
+        .source-company {
+            background: rgba(0, 212, 170, 0.2);
+            color: var(--accent);
+        }
+        
+        .source-website {
+            background: rgba(0, 180, 255, 0.2);
+            color: #00b4ff;
+        }
+        
+        .source-hunter {
+            background: rgba(255, 100, 100, 0.2);
+            color: #ff6464;
+        }
+        
+        .source-inferred {
+            background: rgba(180, 130, 255, 0.2);
+            color: #b482ff;
+        }
+        
+        .source-ch {
+            background: rgba(0, 212, 170, 0.2);
+            color: var(--accent);
+        }
+        
+        .source-imported {
+            background: rgba(255, 200, 100, 0.2);
+            color: #ffc864;
+        }
+        
+        .source-auditor {
+            background: rgba(255, 170, 0, 0.2);
+            color: var(--warning);
+        }
+        
+        .source-other {
+            background: rgba(136, 136, 160, 0.2);
+            color: var(--text-dim);
+        }
+        
+        .email-match-type {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+        }
+        
+        .email-confidence {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            margin-left: 6px;
+        }
+        
+        .website-link {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-family: 'JetBrains Mono', monospace;
+            transition: opacity 0.2s;
+        }
+        
+        .website-link:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+        
+        .domain-source {
+            font-size: 0.7rem;
+            margin-left: 4px;
+            opacity: 0.7;
+        }
+        
+        .source-free {
+            color: var(--success);
+        }
+        
+        .source-verified {
+            color: var(--warning);
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .progress-bar {
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 16px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--accent-dim));
+            border-radius: 2px;
+            transition: width 0.3s ease;
+        }
+        
+        .empty-state {
+            padding: 80px 40px;
+            text-align: center;
+            color: var(--text-dim);
+        }
+        
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 16px;
+            opacity: 0.3;
+        }
+        
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            transform: translateY(120%);
+            opacity: 0;
+            visibility: hidden;
+            transition: transform 0.3s ease, opacity 0.3s ease, visibility 0.3s;
+            z-index: 1000;
+        }
+        
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .toast.success {
+            border-color: var(--success);
+        }
+        
+        .toast.error {
+            border-color: var(--error);
+        }
+        
+        /* Processing status panel */
+        .processing-status {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--accent);
+            border-radius: 12px;
+            padding: 16px 20px;
+            min-width: 280px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            z-index: 999;
+            display: none;
+        }
+        
+        .processing-status.show {
+            display: block;
+            animation: slideIn 0.3s ease;
+        }
+        
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        
+        .processing-status h4 {
+            margin: 0 0 12px 0;
+            font-size: 0.9rem;
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .processing-status .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .processing-status .status-line {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin: 6px 0;
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        .processing-status .status-line .value {
+            color: var(--text);
+            font-weight: 600;
+        }
+        
+        .processing-status .status-progress {
+            height: 4px;
+            background: var(--bg-dark);
+            border-radius: 2px;
+            margin-top: 12px;
+            overflow: hidden;
+        }
+        
+        .processing-status .status-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--accent-dim));
+            width: 0%;
+            transition: width 0.2s ease;
+        }
+        
+        .checkbox-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--accent);
+            cursor: pointer;
+        }
+        
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 1.75rem;
+            }
+            
+            .filters-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .stats-bar {
+                gap: 24px;
+            }
+            
+            .btn-row {
+                flex-direction: column;
+            }
+            
+            button {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-pattern"></div>
+    
+    <div class="container">
+        <header>
+            <h1>Company Data Enrichment</h1>
+            <p class="subtitle">Filter UK companies and enrich with director information</p>
+        </header>
+        
+        <div class="filters-card">
+            <div class="filters-grid">
+                <div class="form-group">
+                    <label for="sic-filter">SIC Category</label>
+                    <select id="sic-filter">
+                        <option value="all_target">All Target SIC Codes</option>
+                        <option value="accountants">Accountants (69201, 69203)</option>
+                        <option value="management_consultancy">Management Consultancy (70229)</option>
+                        <option value="business_support">Business Support (82990, 82110)</option>
+                        <option value="69201">69201 - Accounting & Auditing</option>
+                        <option value="69203">69203 - Tax Consultancy</option>
+                        <option value="70229">70229 - Management Consultancy</option>
+                        <option value="82990">82990 - Business Support Services</option>
+                        <option value="82110">82110 - Office Admin Services</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="postcode-filter">Postcode Prefix</label>
+                    <input type="text" id="postcode-filter" placeholder="e.g. W1, EC1, SW1">
+                </div>
+                
+                <div class="form-group">
+                    <label for="year-filter">Formation Year</label>
+                    <select id="year-filter">
+                        <option value="">All Years</option>
+                        <option value="2025">2025 (newest)</option>
+                        <option value="2024">2024</option>
+                        <option value="2023">2023</option>
+                        <option value="2022">2022</option>
+                        <option value="pre2022">Pre-2022</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="limit">Number of Records</label>
+                    <input type="number" id="limit" value="300" min="1" max="1000">
+                </div>
+            </div>
+            
+            <div class="btn-row">
+                <div class="file-input-wrapper">
+                    <input type="file" id="csv-upload" accept=".csv" onchange="importCSV(event)" class="file-input-styled">
+                </div>
+                
+                <button class="btn-primary" id="search-btn" onclick="searchCompanies()">
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    Search Companies
+                </button>
+                
+                <button class="btn-secondary" id="enrich-btn" onclick="enrichSelected()" disabled>
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
+                    Enrich Directors
+                </button>
+                
+                <button class="btn-secondary" id="domain-btn" onclick="enrichDomains(false)" disabled>
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
+                    </svg>
+                    Find Websites (Free)
+                </button>
+                
+                <button class="btn-secondary" id="email-free-btn" onclick="enrichEmailsFree()" disabled>
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                    Find Emails (Free)
+                </button>
+                
+                <button class="btn-secondary" id="email-btn" onclick="enrichEmails()" disabled style="opacity: 0.6;">
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                    Enrich Emails (Hunter 💰)
+                </button>
+                
+                <button class="btn-verify" id="verify-btn" onclick="verifyEmails()" disabled>
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    Verify Emails (Hunter 💰)
+                </button>
+                
+                <button class="btn-secondary" id="export-btn" onclick="exportData()" disabled>
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </svg>
+                    Export Full CSV
+                </button>
+                
+                <button class="btn-primary" id="export-clean-btn" onclick="exportCleanData()" disabled>
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    Export Clean Emails
+                </button>
+            </div>
+            
+            <div class="stats-bar" id="stats-bar" style="display: none;">
+                <div class="stat">
+                    <span class="stat-value" id="stat-total">0</span>
+                    <span class="stat-label">Companies</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="stat-directors">0</span>
+                    <span class="stat-label">Directors</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="stat-domains">0</span>
+                    <span class="stat-label">Websites</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="stat-emails">0</span>
+                    <span class="stat-label">Total Emails</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value stat-valid" id="stat-valid">0</span>
+                    <span class="stat-label">✅ Valid</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value stat-invalid" id="stat-invalid">0</span>
+                    <span class="stat-label">❌ Invalid</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value stat-risky" id="stat-risky">0</span>
+                    <span class="stat-label">⚠️ Risky</span>
+                </div>
+            </div>
+            
+            <div class="progress-bar" id="progress-bar" style="display: none;">
+                <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+            </div>
+        </div>
+        
+        <div class="results-card">
+            <div class="results-header">
+                <h2>Results</h2>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="select-all" onchange="toggleSelectAll()">
+                    <label for="select-all" style="text-transform: none; font-weight: 500;">Select All</label>
+                </div>
+            </div>
+            
+            <div class="table-container">
+                <table id="results-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 40px;"></th>
+                            <th>Company</th>
+                            <th>Location</th>
+                            <th>SIC Code</th>
+                            <th>Status</th>
+                            <th>Website</th>
+                            <th>Directors</th>
+                            <th>Emails</th>
+                        </tr>
+                    </thead>
+                    <tbody id="results-body">
+                    </tbody>
+                </table>
+            </div>
+            
+            <div class="empty-state" id="empty-state">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                </svg>
+                <p>Use the filters above to search for companies</p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Processing Status Panel -->
+    <div class="processing-status" id="processing-status">
+        <h4><span class="spinner"></span> <span id="processing-title">Processing...</span></h4>
+        <div class="status-line">
+            <span>Progress</span>
+            <span class="value" id="processing-progress">0 / 0</span>
+        </div>
+        <div class="status-line">
+            <span>Current</span>
+            <span class="value" id="processing-current">Starting...</span>
+        </div>
+        <div class="status-line">
+            <span>Found</span>
+            <span class="value" id="processing-found">0</span>
+        </div>
+        <div class="status-progress">
+            <div class="status-progress-fill" id="processing-fill"></div>
+        </div>
+    </div>
+    
+    <div class="toast" id="toast">
+        <span id="toast-message"></span>
+    </div>
+    
+    <script>
+        let companies = [];
+        let enrichedCount = 0;
+        let totalDirectors = 0;
+        let totalDomains = 0;
+        let totalEmails = 0;
+        
+        async function importCSV(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                const text = e.target.result;
+                const lines = text.split('\n').filter(line => line.trim());
+                
+                if (lines.length < 2) {
+                    showToast('CSV must have a header row and at least one data row', 'error');
+                    return;
+                }
+                
+                // Parse header to find column indices
+                const header = lines[0].toLowerCase().split(',').map(h => h.trim().replace(/"/g, ''));
+                const nameIdx = header.findIndex(h => h.includes('name') || h.includes('company'));
+                const emailIdx = header.findIndex(h => h.includes('email'));
+                const locationIdx = header.findIndex(h => h.includes('location') || h.includes('address') || h.includes('postcode'));
+                const websiteIdx = header.findIndex(h => h.includes('website') || h.includes('domain') || h.includes('url'));
+                
+                if (nameIdx === -1) {
+                    showToast('CSV must have a column containing "name" or "company"', 'error');
+                    return;
+                }
+                
+                // Parse data rows
+                const importedCompanies = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const cols = parseCSVLine(lines[i]);
+                    if (cols.length > nameIdx && cols[nameIdx].trim()) {
+                        importedCompanies.push({
+                            import_name: cols[nameIdx].trim().replace(/"/g, ''),
+                            import_email: emailIdx !== -1 && cols[emailIdx] ? cols[emailIdx].trim().replace(/"/g, '') : '',
+                            import_location: locationIdx !== -1 && cols[locationIdx] ? cols[locationIdx].trim().replace(/"/g, '') : '',
+                            import_website: websiteIdx !== -1 && cols[websiteIdx] ? cols[websiteIdx].trim().replace(/"/g, '') : ''
+                        });
+                    }
+                }
+                
+                if (importedCompanies.length === 0) {
+                    showToast('No valid company names found in CSV', 'error');
+                    return;
+                }
+                
+                // Show processing status
+                showProcessing('Matching Companies', importedCompanies.length);
+                updateProcessing(0, importedCompanies.length, 'Searching Companies House...', 0);
+                
+                // Send to backend to match against Companies House data
+                try {
+                    const response = await fetch('/api/import-match', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ companies: importedCompanies })
+                    });
+                    
+                    const data = await response.json();
+                    hideProcessing();
+                    
+                    if (data.error) {
+                        showToast(data.error, 'error');
+                        return;
+                    }
+                    
+                    companies = data.companies;
+                    enrichedCount = 0;
+                    totalDirectors = 0;
+                    totalDomains = 0;
+                    totalEmails = 0;
+                    
+                    // Count pre-existing data
+                    companies.forEach(c => {
+                        if (c.emails && c.emails.length) totalEmails += c.emails.length;
+                        if (c.domain) totalDomains++;
+                    });
+                    
+                    renderResults();
+                    updateStats();
+                    
+                    document.getElementById('stats-bar').style.display = 'flex';
+                    document.getElementById('empty-state').style.display = companies.length ? 'none' : 'block';
+                    document.getElementById('enrich-btn').disabled = !companies.length;
+                    document.getElementById('domain-btn').disabled = !companies.length;
+                    document.getElementById('email-free-btn').disabled = !companies.length;
+                    document.getElementById('email-btn').disabled = !companies.length;
+                    document.getElementById('verify-btn').disabled = true;  // Enable only after finding emails
+                    document.getElementById('export-btn').disabled = !companies.length;
+                    document.getElementById('export-clean-btn').disabled = !companies.length;
+                    
+                    let msg = `Matched ${data.matched} of ${data.total} companies`;
+                    if (data.matched_via_api > 0) {
+                        msg += ` (${data.matched_via_api} via API search)`;
+                    }
+                    if (data.not_found > 0) {
+                        msg += ` - ${data.not_found} not found`;
+                    }
+                    showToast(msg, 'success');
+                    
+                } catch (error) {
+                    hideProcessing();
+                    showToast('Error importing: ' + error.message, 'error');
+                }
+            };
+            
+            reader.readAsText(file);
+            event.target.value = ''; // Reset file input
+        }
+        
+        function parseCSVLine(line) {
+            // Simple CSV parser that handles quoted fields
+            const result = [];
+            let current = '';
+            let inQuotes = false;
+            
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i];
+                if (char === '"') {
+                    inQuotes = !inQuotes;
+                } else if (char === ',' && !inQuotes) {
+                    result.push(current);
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+            result.push(current);
+            return result;
+        }
+        
+        async function searchCompanies() {
+            const sic = document.getElementById('sic-filter').value;
+            const postcode = document.getElementById('postcode-filter').value;
+            const yearFilter = document.getElementById('year-filter').value;
+            const limit = parseInt(document.getElementById('limit').value) || 300;
+            
+            const searchBtn = document.getElementById('search-btn');
+            searchBtn.disabled = true;
+            searchBtn.innerHTML = '<span class="loading-spinner"></span> Searching...';
+            
+            try {
+                const response = await fetch('/api/filter', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sic, postcode, year: yearFilter, limit })
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+                
+                companies = data.companies;
+                enrichedCount = 0;
+                totalDirectors = 0;
+                totalDomains = 0;
+                totalEmails = 0;
+                
+                renderResults();
+                updateStats();
+                
+                document.getElementById('stats-bar').style.display = 'flex';
+                document.getElementById('empty-state').style.display = companies.length ? 'none' : 'block';
+                document.getElementById('enrich-btn').disabled = !companies.length;
+                document.getElementById('domain-btn').disabled = !companies.length;
+                document.getElementById('email-free-btn').disabled = !companies.length;
+                document.getElementById('email-btn').disabled = !companies.length;
+                document.getElementById('verify-btn').disabled = true;  // Enable only after finding emails
+                document.getElementById('export-btn').disabled = !companies.length;
+                document.getElementById('export-clean-btn').disabled = !companies.length;
+                
+                showToast(`Found ${companies.length} companies`, 'success');
+                
+            } catch (error) {
+                showToast('Error searching companies: ' + error.message, 'error');
+            } finally {
+                searchBtn.disabled = false;
+                searchBtn.innerHTML = `
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    Search Companies`;
+            }
+        }
+        
+        function renderResults() {
+            const tbody = document.getElementById('results-body');
+            
+            tbody.innerHTML = companies.map((company, index) => `
+                <tr>
+                    <td>
+                        <input type="checkbox" class="company-checkbox" data-index="${index}" checked>
+                    </td>
+                    <td>
+                        <div class="company-name">${escapeHtml(company.company_name)}</div>
+                        <div class="company-number">${company.company_number}</div>
+                    </td>
+                    <td>
+                        <div>${escapeHtml(company.address_line1)}</div>
+                        <div style="color: var(--text-dim); font-size: 0.9rem;">
+                            ${escapeHtml(company.town)} ${escapeHtml(company.postcode)}
+                        </div>
+                    </td>
+                    <td>
+                        <span class="sic-badge">${company.sic_code}</span>
+                    </td>
+                    <td>
+                        <span class="${company.status === 'Active' ? 'status-active' : 'status-inactive'}">
+                            ${escapeHtml(company.status)}
+                        </span>
+                    </td>
+                    <td class="website-cell" id="website-${index}">
+                        ${company.domain ? 
+                            `<a href="https://${escapeHtml(company.domain)}" target="_blank" class="website-link">${escapeHtml(company.domain)}</a>
+                             <span class="domain-source ${company.domain_source === 'inferred' ? 'source-free' : 'source-verified'}">${company.domain_source === 'hunter' ? '💰' : '✓'}</span>` : 
+                            '<span style="color: var(--text-dim);">—</span>'
+                        }
+                    </td>
+                    <td class="directors-cell" id="directors-${index}">
+                        ${company.directors.length ? 
+                            company.directors.map(d => `
+                                <div class="director-item">${escapeHtml(d.name)}</div>
+                            `).join('') : 
+                            '<span style="color: var(--text-dim);">—</span>'
+                        }
+                    </td>
+                    <td class="emails-cell" id="emails-${index}">
+                        ${company.emails && company.emails.length ? 
+                            company.emails.map(e => `
+                                <div class="email-item">
+                                    <a href="mailto:${escapeHtml(e.email)}" class="email-link">${escapeHtml(e.email)}</a>
+                                    <div class="email-meta">
+                                        <span class="email-source ${getSourceClass(e.source)}">${getSourceLabel(e.source)}</span>
+                                        ${e.verified ? `<span class="verification-badge ${getVerificationClass(e.verification_status)}">${getVerificationLabel(e.verification_status, e.verification_score)}</span>` : ''}
+                                        ${e.match_type ? `<span class="email-match-type">${e.match_type === 'company' ? '✓ Company' : e.match_type === 'auditor' ? '📊 Auditor' : e.match_type === 'agent' ? '📝 Agent' : '❓ Other'}</span>` : ''}
+                                        ${e.confidence ? `<span class="email-confidence">${e.confidence}%</span>` : ''}
+                                    </div>
+                                </div>
+                            `).join('') : 
+                            '<span style="color: var(--text-dim);">—</span>'
+                        }
+                    </td>
+                </tr>
+            `).join('');
+        }
+        
+        async function enrichSelected() {
+            const checkboxes = document.querySelectorAll('.company-checkbox:checked');
+            const selectedIndices = Array.from(checkboxes).map(cb => parseInt(cb.dataset.index));
+            
+            if (selectedIndices.length === 0) {
+                showToast('Please select companies to enrich', 'error');
+                return;
+            }
+            
+            const enrichBtn = document.getElementById('enrich-btn');
+            enrichBtn.disabled = true;
+            enrichBtn.innerHTML = '<span class="loading-spinner"></span> Enriching...';
+            
+            const progressBar = document.getElementById('progress-bar');
+            const progressFill = document.getElementById('progress-fill');
+            progressBar.style.display = 'block';
+            
+            // Show processing status
+            showProcessing('Fetching Directors', selectedIndices.length);
+            
+            const companyNumbers = selectedIndices.map(i => companies[i].company_number);
+            const batchSize = 50;
+            let processed = 0;
+            
+            try {
+                for (let i = 0; i < companyNumbers.length; i += batchSize) {
+                    const batch = companyNumbers.slice(i, i + batchSize);
+                    const currentCompany = companies.find(c => c.company_number === batch[0]);
+                    
+                    // Update status before request
+                    updateProcessing(processed, companyNumbers.length, 
+                        currentCompany ? currentCompany.company_name.substring(0, 25) + '...' : 'Batch ' + (i/batchSize + 1),
+                        totalDirectors);
+                    
+                    const response = await fetch('/api/enrich', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ company_numbers: batch })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    // Update companies with director data
+                    data.enriched.forEach(enriched => {
+                        const companyIndex = companies.findIndex(c => c.company_number === enriched.company_number);
+                        if (companyIndex !== -1 && enriched.directors.length > 0) {
+                            companies[companyIndex].directors = enriched.directors;
+                            enrichedCount++;
+                            totalDirectors += enriched.directors.length;
+                        }
+                    });
+                    
+                    processed += batch.length;
+                    progressFill.style.width = `${(processed / companyNumbers.length) * 100}%`;
+                    updateProcessing(processed, companyNumbers.length, 'Processing results...', totalDirectors);
+                    
+                    renderResults();
+                    updateStats();
+                }
+                
+                showToast(`Found ${totalDirectors} directors for ${enrichedCount} companies`, 'success');
+                
+            } catch (error) {
+                showToast('Error enriching companies: ' + error.message, 'error');
+            } finally {
+                hideProcessing();
+                enrichBtn.disabled = false;
+                enrichBtn.innerHTML = `
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
+                    Enrich Directors`;
+                
+                setTimeout(() => {
+                    progressBar.style.display = 'none';
+                    progressFill.style.width = '0%';
+                }, 1000);
+            }
+        }
+        
+        async function enrichDomains(useHunter = false) {
+            const checkboxes = document.querySelectorAll('.company-checkbox:checked');
+            const selectedIndices = Array.from(checkboxes).map(cb => parseInt(cb.dataset.index));
+            
+            if (selectedIndices.length === 0) {
+                showToast('Please select companies to find websites for', 'error');
+                return;
+            }
+            
+            const domainBtn = document.getElementById('domain-btn');
+            domainBtn.disabled = true;
+            const methodText = useHunter ? 'Finding (with Hunter.io)...' : 'Finding (Free)...';
+            domainBtn.innerHTML = `<span class="loading-spinner"></span> ${methodText}`;
+            
+            const progressBar = document.getElementById('progress-bar');
+            const progressFill = document.getElementById('progress-fill');
+            progressBar.style.display = 'block';
+            
+            const selectedCompanies = selectedIndices.map(i => companies[i]);
+            const batchSize = useHunter ? 50 : 100;  // Can do more with free method
+            let processed = 0;
+            let freeFound = 0;
+            let hunterFound = 0;
+            
+            try {
+                for (let i = 0; i < selectedCompanies.length; i += batchSize) {
+                    const batch = selectedCompanies.slice(i, i + batchSize);
+                    
+                    const response = await fetch('/api/enrich-domains', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ companies: batch, use_hunter: useHunter })
+                    });
+                    
+                    const data = await response.json();
+                    freeFound += data.free_found || 0;
+                    hunterFound += data.hunter_found || 0;
+                    
+                    // Update companies with domain data
+                    data.enriched.forEach(enriched => {
+                        const companyIndex = companies.findIndex(c => c.company_number === enriched.company_number);
+                        if (companyIndex !== -1 && enriched.domain) {
+                            companies[companyIndex].domain = enriched.domain;
+                            companies[companyIndex].domain_source = enriched.source;
+                            totalDomains++;
+                        }
+                    });
+                    
+                    processed += batch.length;
+                    progressFill.style.width = `${(processed / selectedCompanies.length) * 100}%`;
+                    
+                    renderResults();
+                    updateStats();
+                }
+                
+                let message = `Found ${totalDomains} websites`;
+                if (freeFound > 0) message += ` (${freeFound} free)`;
+                if (hunterFound > 0) message += ` (${hunterFound} via Hunter)`;
+                showToast(message, 'success');
+                
+            } catch (error) {
+                showToast('Error finding websites: ' + error.message, 'error');
+            } finally {
+                domainBtn.disabled = false;
+                domainBtn.innerHTML = `
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
+                    </svg>
+                    Find Websites (Free)`;
+                
+                setTimeout(() => {
+                    progressBar.style.display = 'none';
+                    progressFill.style.width = '0%';
+                }, 1000);
+            }
+        }
+        
+        async function enrichEmailsFree() {
+            const checkboxes = document.querySelectorAll('.company-checkbox:checked');
+            const selectedIndices = Array.from(checkboxes).map(cb => parseInt(cb.dataset.index));
+            
+            if (selectedIndices.length === 0) {
+                showToast('Please select companies to find emails for', 'error');
+                return;
+            }
+            
+            const emailFreeBtn = document.getElementById('email-free-btn');
+            emailFreeBtn.disabled = true;
+            emailFreeBtn.innerHTML = '<span class="loading-spinner"></span> Finding Emails...';
+            
+            const progressBar = document.getElementById('progress-bar');
+            const progressFill = document.getElementById('progress-fill');
+            progressBar.style.display = 'block';
+            
+            // Show processing status
+            showProcessing('Finding Emails (Free)', selectedIndices.length);
+            
+            const selectedCompanies = selectedIndices.map(i => companies[i]);
+            const batchSize = 20;  // Smaller batches for more frequent updates
+            let processed = 0;
+            let companyEmails = 0;
+            let otherEmails = 0;
+            let emailsFound = 0;
+            
+            try {
+                for (let i = 0; i < selectedCompanies.length; i += batchSize) {
+                    const batch = selectedCompanies.slice(i, i + batchSize);
+                    const currentCompany = batch[0];
+                    
+                    // Update status before request
+                    updateProcessing(processed, selectedCompanies.length, 
+                        currentCompany ? currentCompany.company_name.substring(0, 25) + '...' : 'Processing...',
+                        emailsFound);
+                    
+                    const response = await fetch('/api/enrich-emails-free', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ companies: batch })
+                    });
+                    
+                    const data = await response.json();
+                    companyEmails += data.company_emails || 0;
+                    otherEmails += data.other_emails || 0;
+                    emailsFound += data.emails_found || 0;
+                    
+                    // Update companies with email data
+                    data.enriched.forEach(enriched => {
+                        const companyIndex = companies.findIndex(c => c.company_number === enriched.company_number);
+                        if (companyIndex !== -1 && enriched.emails && enriched.emails.length > 0) {
+                            // Replace inferred emails with real Hunter ones
+                            if (enriched.replaces_inferred) {
+                                // Remove inferred emails, keep real ones
+                                const realEmails = (companies[companyIndex].emails || []).filter(
+                                    e => e.source !== 'inferred'
+                                );
+                                companies[companyIndex].emails = [...realEmails, ...enriched.emails];
+                            } else {
+                                // Just add new emails
+                                if (!companies[companyIndex].emails) {
+                                    companies[companyIndex].emails = [];
+                                }
+                                companies[companyIndex].emails = [...companies[companyIndex].emails, ...enriched.emails];
+                            }
+                            totalEmails = companies.reduce((sum, c) => sum + (c.emails?.length || 0), 0);
+                        }
+                    });
+                    
+                    processed += batch.length;
+                    progressFill.style.width = `${(processed / selectedCompanies.length) * 100}%`;
+                    updateProcessing(processed, selectedCompanies.length, 'Processing results...', totalEmails);
+                    
+                    renderResults();
+                    updateStats();
+                }
+                
+                let message = `Found ${totalEmails} emails`;
+                showToast(message, 'success');
+                
+                // Enable verify button if we found emails
+                if (totalEmails > 0) {
+                    document.getElementById('verify-btn').disabled = false;
+                }
+                
+            } catch (error) {
+                showToast('Error finding emails: ' + error.message, 'error');
+            } finally {
+                hideProcessing();
+                emailFreeBtn.disabled = false;
+                emailFreeBtn.innerHTML = `
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                    Find Emails (Free)`;
+                
+                setTimeout(() => {
+                    progressBar.style.display = 'none';
+                    progressFill.style.width = '0%';
+                }, 1000);
+            }
+        }
+        
+        async function enrichEmails() {
+            const checkboxes = document.querySelectorAll('.company-checkbox:checked');
+            const selectedIndices = Array.from(checkboxes).map(cb => parseInt(cb.dataset.index));
+            
+            if (selectedIndices.length === 0) {
+                showToast('Please select companies first', 'error');
+                return;
+            }
+            
+            // Filter to companies that need Hunter (have inferred emails or no emails)
+            const companiesNeedingHunter = selectedIndices.filter(i => {
+                const emails = companies[i].emails || [];
+                const hasRealEmails = emails.some(e => 
+                    e.source === 'website_scrape' || e.source === 'website_mailto' || e.source === 'imported'
+                );
+                return !hasRealEmails;  // Only include if no real emails
+            });
+            
+            if (companiesNeedingHunter.length === 0) {
+                showToast('All selected companies already have real emails - no Hunter needed!', 'success');
+                return;
+            }
+            
+            const skippedCount = selectedIndices.length - companiesNeedingHunter.length;
+            
+            const emailBtn = document.getElementById('email-btn');
+            emailBtn.disabled = true;
+            emailBtn.innerHTML = '<span class="loading-spinner"></span> Hunter Lookup...';
+            
+            const progressBar = document.getElementById('progress-bar');
+            const progressFill = document.getElementById('progress-fill');
+            progressBar.style.display = 'block';
+            
+            const selectedCompanies = companiesNeedingHunter.map(i => companies[i]);
+            const batchSize = 30;
+            let processed = 0;
+            let hunterFound = 0;
+            
+            try {
+                for (let i = 0; i < selectedCompanies.length; i += batchSize) {
+                    const batch = selectedCompanies.slice(i, i + batchSize);
+                    
+                    const response = await fetch('/api/enrich-emails', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ companies: batch })
+                    });
+                    
+                    const data = await response.json();
+                    hunterFound += data.emails_found || 0;
+                    
+                    // Update companies - replace inferred emails with Hunter ones
+                    data.enriched.forEach(enriched => {
+                        const companyIndex = companies.findIndex(c => c.company_number === enriched.company_number);
+                        if (companyIndex !== -1 && enriched.emails && enriched.emails.length > 0) {
+                            companies[companyIndex].emails = enriched.emails;
+                        }
+                    });
+                    
+                    processed += batch.length;
+                    progressFill.style.width = `${(processed / selectedCompanies.length) * 100}%`;
+                    
+                    renderResults();
+                    totalEmails = companies.reduce((sum, c) => sum + (c.emails?.length || 0), 0);
+                    updateStats();
+                }
+                
+                let msg = `Hunter found ${hunterFound} emails`;
+                if (skippedCount > 0) msg += ` (${skippedCount} skipped - already have real emails)`;
+                showToast(msg, 'success');
+                
+                // Enable verify button if we have emails
+                if (totalEmails > 0) {
+                    document.getElementById('verify-btn').disabled = false;
+                }
+                
+            } catch (error) {
+                showToast('Error with Hunter: ' + error.message, 'error');
+            } finally {
+                emailBtn.disabled = false;
+                emailBtn.innerHTML = `
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                    Enrich Emails (Hunter 💰)`;
+                
+                setTimeout(() => {
+                    progressBar.style.display = 'none';
+                    progressFill.style.width = '0%';
+                }, 1000);
+            }
+        }
+        
+        async function verifyEmails() {
+            const checkboxes = document.querySelectorAll('.company-checkbox:checked');
+            const selectedIndices = Array.from(checkboxes).map(cb => parseInt(cb.dataset.index));
+            
+            if (selectedIndices.length === 0) {
+                showToast('Please select companies first', 'error');
+                return;
+            }
+            
+            // Collect all emails from selected companies
+            const emailsToVerify = [];
+            selectedIndices.forEach(i => {
+                const company = companies[i];
+                if (company.emails && company.emails.length > 0) {
+                    company.emails.forEach(emailData => {
+                        // Skip already verified emails
+                        if (!emailData.verified) {
+                            emailsToVerify.push({
+                                email: emailData.email,
+                                company_number: company.company_number,
+                                company_name: company.company_name,
+                                first_name: emailData.first_name || '',
+                                last_name: emailData.last_name || ''
+                            });
+                        }
+                    });
+                }
+            });
+            
+            if (emailsToVerify.length === 0) {
+                showToast('No unverified emails found. Find emails first!', 'error');
+                return;
+            }
+            
+            const verifyBtn = document.getElementById('verify-btn');
+            verifyBtn.disabled = true;
+            verifyBtn.innerHTML = '<span class="loading-spinner"></span> Verifying...';
+            
+            const progressBar = document.getElementById('progress-bar');
+            const progressFill = document.getElementById('progress-fill');
+            progressBar.style.display = 'block';
+            
+            // Show processing status
+            showProcessing('Verifying Emails (Hunter)', emailsToVerify.length);
+            
+            const batchSize = 20;  // Smaller batches for more updates
+            let processed = 0;
+            let validCount = 0;
+            let invalidCount = 0;
+            let riskyCount = 0;
+            
+            try {
+                for (let i = 0; i < emailsToVerify.length; i += batchSize) {
+                    const batch = emailsToVerify.slice(i, i + batchSize);
+                    const currentEmail = batch[0];
+                    
+                    // Update status
+                    updateProcessing(processed, emailsToVerify.length, 
+                        currentEmail ? currentEmail.email.substring(0, 25) + '...' : 'Verifying...',
+                        validCount);
+                    
+                    const response = await fetch('/api/verify-emails', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ emails: batch })
+                    });
+                    
+                    const data = await response.json();
+                    validCount += data.valid_count || 0;
+                    invalidCount += data.invalid_count || 0;
+                    riskyCount += data.risky_count || 0;
+                    
+                    // Update emails with verification status
+                    data.results.forEach(result => {
+                        const companyIndex = companies.findIndex(c => c.company_number === result.company_number);
+                        if (companyIndex !== -1) {
+                            const emailIndex = companies[companyIndex].emails.findIndex(e => e.email === result.email);
+                            if (emailIndex !== -1) {
+                                companies[companyIndex].emails[emailIndex].verified = true;
+                                companies[companyIndex].emails[emailIndex].verification_status = result.status;
+                                companies[companyIndex].emails[emailIndex].verification_score = result.score;
+                            }
+                        }
+                    });
+                    
+                    processed += batch.length;
+                    progressFill.style.width = `${(processed / emailsToVerify.length) * 100}%`;
+                    
+                    renderResults();
+                }
+                
+                showToast(`Verified ${processed} emails: ✅ ${validCount} valid, ❌ ${invalidCount} invalid, ⚠️ ${riskyCount} risky`, 'success');
+                
+            } catch (error) {
+                showToast('Error verifying emails: ' + error.message, 'error');
+            } finally {
+                hideProcessing();
+                verifyBtn.disabled = false;
+                verifyBtn.innerHTML = `
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    Verify Emails (Hunter 💰)`;
+                
+                setTimeout(() => {
+                    progressBar.style.display = 'none';
+                    progressFill.style.width = '0%';
+                }, 1000);
+            }
+        }
+        
+        async function exportData() {
+            const checkboxes = document.querySelectorAll('.company-checkbox:checked');
+            const selectedIndices = Array.from(checkboxes).map(cb => parseInt(cb.dataset.index));
+            const selectedCompanies = selectedIndices.map(i => companies[i]);
+            
+            if (selectedCompanies.length === 0) {
+                showToast('Please select companies to export', 'error');
+                return;
+            }
+            
+            const exportBtn = document.getElementById('export-btn');
+            exportBtn.disabled = true;
+            exportBtn.innerHTML = '<span class="loading-spinner"></span> Exporting...';
+            
+            try {
+                const sic = document.getElementById('sic-filter').value;
+                const postcode = document.getElementById('postcode-filter').value || 'all';
+                const filename = `enriched_${sic}_${postcode}_${Date.now()}.csv`;
+                
+                const response = await fetch('/api/export', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ companies: selectedCompanies, filename })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showToast(`Exported ${data.count} companies to ${filename}`, 'success');
+                } else {
+                    showToast('Export failed', 'error');
+                }
+                
+            } catch (error) {
+                showToast('Error exporting: ' + error.message, 'error');
+            } finally {
+                exportBtn.disabled = false;
+                exportBtn.innerHTML = `
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </svg>
+                    Export Full CSV`;
+            }
+        }
+        
+        async function exportCleanData() {
+            const checkboxes = document.querySelectorAll('.company-checkbox:checked');
+            const selectedIndices = Array.from(checkboxes).map(cb => parseInt(cb.dataset.index));
+            const selectedCompanies = selectedIndices.map(i => companies[i]);
+            
+            if (selectedCompanies.length === 0) {
+                showToast('Please select companies to export', 'error');
+                return;
+            }
+            
+            const exportBtn = document.getElementById('export-clean-btn');
+            exportBtn.disabled = true;
+            exportBtn.innerHTML = '<span class="loading-spinner"></span> Exporting...';
+            
+            try {
+                const filename = `clean_emails_${Date.now()}.csv`;
+                
+                const response = await fetch('/api/export-clean', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ companies: selectedCompanies, filename })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    let msg = `Exported ${data.total_emails} clean emails to ${filename}`;
+                    if (data.skipped_invalid > 0) {
+                        msg += ` (${data.skipped_invalid} invalid skipped)`;
+                    }
+                    showToast(msg, 'success');
+                } else {
+                    showToast('Export failed', 'error');
+                }
+                
+            } catch (error) {
+                showToast('Error exporting: ' + error.message, 'error');
+            } finally {
+                exportBtn.disabled = false;
+                exportBtn.innerHTML = `
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    Export Clean Emails`;
+            }
+        }
+        
+        function toggleSelectAll() {
+            const selectAll = document.getElementById('select-all').checked;
+            document.querySelectorAll('.company-checkbox').forEach(cb => cb.checked = selectAll);
+        }
+        
+        function updateStats() {
+            // Calculate email verification stats
+            let validCount = 0;
+            let invalidCount = 0;
+            let riskyCount = 0;
+            let totalEmailCount = 0;
+            
+            companies.forEach(c => {
+                if (c.emails) {
+                    c.emails.forEach(e => {
+                        totalEmailCount++;
+                        const status = (e.verification_status || '').toLowerCase();
+                        if (status === 'valid') {
+                            validCount++;
+                        } else if (status === 'invalid') {
+                            invalidCount++;
+                        } else if (status === 'accept_all' || status === 'webmail' || status === 'unknown') {
+                            riskyCount++;
+                        }
+                    });
+                }
+            });
+            
+            document.getElementById('stat-total').textContent = companies.length.toLocaleString();
+            document.getElementById('stat-directors').textContent = totalDirectors.toLocaleString();
+            document.getElementById('stat-domains').textContent = totalDomains.toLocaleString();
+            document.getElementById('stat-emails').textContent = totalEmailCount.toLocaleString();
+            document.getElementById('stat-valid').textContent = validCount.toLocaleString();
+            document.getElementById('stat-invalid').textContent = invalidCount.toLocaleString();
+            document.getElementById('stat-risky').textContent = riskyCount.toLocaleString();
+        }
+        
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toast-message');
+            
+            // Remove any existing show class and force reflow
+            toast.classList.remove('show');
+            void toast.offsetWidth; // Force reflow
+            
+            toast.className = `toast ${type}`;
+            toastMessage.textContent = message;
+            toast.classList.add('show');
+            
+            // Clear any existing timeout
+            if (toast.hideTimeout) clearTimeout(toast.hideTimeout);
+            toast.hideTimeout = setTimeout(() => {
+                toast.classList.remove('show');
+            }, 4000);
+        }
+        
+        // Processing status helpers
+        function showProcessing(title, total = 0) {
+            const panel = document.getElementById('processing-status');
+            document.getElementById('processing-title').textContent = title;
+            document.getElementById('processing-progress').textContent = `0 / ${total}`;
+            document.getElementById('processing-current').textContent = 'Starting...';
+            document.getElementById('processing-found').textContent = '0';
+            document.getElementById('processing-fill').style.width = '0%';
+            panel.classList.add('show');
+        }
+        
+        function updateProcessing(current, total, currentItem = '', found = 0) {
+            document.getElementById('processing-progress').textContent = `${current} / ${total}`;
+            document.getElementById('processing-current').textContent = currentItem || `Processing ${current}...`;
+            document.getElementById('processing-found').textContent = String(found);
+            const pct = total > 0 ? (current / total) * 100 : 0;
+            document.getElementById('processing-fill').style.width = `${pct}%`;
+        }
+        
+        function hideProcessing() {
+            document.getElementById('processing-status').classList.remove('show');
+        }
+        
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function getSourceLabel(source) {
+            if (!source) return '';
+            const labels = {
+                'email_finder': '💰 Hunter',
+                'domain_search': '💰 Hunter',
+                'website_scrape': '🌐 Website',
+                'website_mailto': '🌐 Website',
+                'hunter': '💰 Hunter',
+                'imported': '📥 Imported'
+            };
+            return labels[source.toLowerCase()] || source;
+        }
+        
+        function getSourceClass(source) {
+            if (!source) return 'source-other';
+            const s = source.toLowerCase();
+            if (s.includes('website')) return 'source-website';
+            if (s.includes('hunter') || s === 'email_finder' || s === 'domain_search') return 'source-hunter';
+            if (s.includes('ch_') || s.includes('companies')) return 'source-ch';
+            if (s.includes('imported')) return 'source-imported';
+            return 'source-other';
+        }
+        
+        function getVerificationClass(status) {
+            if (!status) return 'verification-unknown';
+            const s = status.toLowerCase();
+            if (s === 'valid') return 'verification-valid';
+            if (s === 'invalid') return 'verification-invalid';
+            if (s === 'accept_all' || s === 'webmail' || s === 'unknown') return 'verification-risky';
+            return 'verification-unknown';
+        }
+        
+        function getVerificationLabel(status, score) {
+            if (!status) return '❓ Unknown';
+            const s = status.toLowerCase();
+            const scoreText = score ? ` ${score}%` : '';
+            if (s === 'valid') return `✅ Valid${scoreText}`;
+            if (s === 'invalid') return '❌ Invalid';
+            if (s === 'accept_all') return `⚠️ Accept-All${scoreText}`;
+            if (s === 'webmail') return `📧 Webmail${scoreText}`;
+            if (s === 'unknown') return `❓ Unknown${scoreText}`;
+            return `❓ ${status}${scoreText}`;
+        }
+    </script>
+</body>
+</html>
+
