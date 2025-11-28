@@ -1886,6 +1886,114 @@ def get_sic_codes():
     })
 
 
+@app.route('/api/export-master', methods=['GET'])
+def export_master_csv():
+    """Export ALL enriched companies with emails from database - Master Export"""
+    from database import get_db
+    
+    filename = f'master_enriched_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+    output_path = os.path.join(os.path.dirname(CSV_PATH), filename)
+    
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get all companies that have at least one email
+            cursor.execute('''
+                SELECT DISTINCT c.id, c.company_name, c.company_number, 
+                       c.address_line1, c.post_town, c.postcode,
+                       c.sic_code_1, c.company_status, c.incorporation_date,
+                       c.website, c.main_phone, c.enrichment_status
+                FROM companies c
+                INNER JOIN emails e ON c.company_number = e.company_number
+                WHERE c.company_status = 'Active'
+                ORDER BY c.company_name
+            ''')
+            companies = cursor.fetchall()
+            
+            total_companies = 0
+            total_emails = 0
+            
+            with open(output_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                
+                # Header
+                writer.writerow([
+                    'Company Name', 'Company Number', 'Address', 'Post Town', 'Postcode',
+                    'SIC Code', 'Status', 'Incorporation Date', 'Website', 'Main Phone',
+                    'Director 1', 'Director 2',
+                    'Email 1', 'Email 1 Source', 'Email 1 Verified',
+                    'Email 2', 'Email 2 Source', 'Email 2 Verified',
+                    'Email 3', 'Email 3 Source', 'Email 3 Verified',
+                    'Enrichment Status'
+                ])
+                
+                for company in companies:
+                    company_id = company['id']
+                    company_number = company['company_number']
+                    
+                    # Get directors
+                    cursor.execute('''
+                        SELECT name FROM directors 
+                        WHERE company_number = ? AND resigned_on IS NULL
+                        LIMIT 2
+                    ''', (company_number,))
+                    directors = [d['name'] for d in cursor.fetchall()]
+                    
+                    # Get emails
+                    cursor.execute('''
+                        SELECT email, source_label, verification_status 
+                        FROM emails WHERE company_number = ?
+                        ORDER BY CASE WHEN verification_status = 'valid' THEN 0 ELSE 1 END
+                        LIMIT 3
+                    ''', (company_number,))
+                    emails = cursor.fetchall()
+                    
+                    # Build row
+                    row = [
+                        company['company_name'],
+                        company_number,
+                        company['address_line1'] or '',
+                        company['post_town'] or '',
+                        company['postcode'] or '',
+                        company['sic_code_1'] or '',
+                        company['company_status'] or '',
+                        company['incorporation_date'] or '',
+                        company['website'] or '',
+                        company['main_phone'] or '',
+                        directors[0] if len(directors) > 0 else '',
+                        directors[1] if len(directors) > 1 else '',
+                    ]
+                    
+                    # Add up to 3 emails
+                    for i in range(3):
+                        if i < len(emails):
+                            row.extend([
+                                emails[i]['email'],
+                                emails[i]['source_label'] or '',
+                                emails[i]['verification_status'] or ''
+                            ])
+                        else:
+                            row.extend(['', '', ''])
+                    
+                    row.append(company['enrichment_status'] or '')
+                    writer.writerow(row)
+                    
+                    total_companies += 1
+                    total_emails += len(emails)
+            
+            return jsonify({
+                'success': True,
+                'filename': filename,
+                'path': output_path,
+                'total_companies': total_companies,
+                'total_emails': total_emails
+            })
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
     """Return database statistics"""
