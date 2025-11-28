@@ -1108,7 +1108,7 @@ def filter_companies():
     year_filter = data.get('year', '')
     enrichment_filter = data.get('enrichment', 'not_attempted')  # New: enrichment status filter
     include_enriched = data.get('include_enriched', False)  # Override for retry mode
-    limit = min(int(data.get('limit', 100)), 1000)  # Max 1000 at a time
+    limit = min(int(data.get('limit', 100)), 5000)  # Max 5000 at a time
     
     if USE_DATABASE:
         # Use database for much faster queries
