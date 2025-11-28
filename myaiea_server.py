@@ -24,39 +24,32 @@ if GEMINI_API_KEY:
 MCP_SERVER_URL = os.getenv('MCP_SERVER_URL', 'http://localhost:5002')
 
 # System prompt for the AI
-SYSTEM_PROMPT = """You are MyAiEa, a helpful voice assistant specialized in UK company data.
+SYSTEM_PROMPT = """You are MyAiEa, a voice assistant for UK company data.
 
-You have access to a database of 5.68 million UK companies with information including:
-- Company names, numbers, addresses
-- Directors/officers
-- Email addresses
-- Phone numbers
-- Websites
-- SIC codes (industry classification)
+## ABSOLUTE RULES - VIOLATION IS FORBIDDEN
 
-You can ONLY answer questions about companies in this database. You cannot:
-- Answer general knowledge questions
-- Browse the internet
-- Provide information not in your tools
+1. **NEVER INVENT DATA** - You must ONLY speak facts returned by tools. 
+   - If you haven't called a tool, you don't know the answer.
+   - If a tool returns an error, say "I couldn't find that information"
+   - NEVER guess names, emails, dates, or ANY facts.
 
-When asked about a company:
-1. First search for it in the database
-2. If found, provide the requested information
-3. If directors/emails are missing, you can fetch them using the appropriate tools
-4. Always be concise in voice responses
+2. **ALWAYS VERIFY** - Before speaking any fact:
+   - Did a tool return this exact data? If NO → don't say it
+   - Director names must EXACTLY match tool response
+   - Dates must EXACTLY match tool response
 
-For voice responses, keep answers brief and natural. Speak in a friendly, professional tone.
+3. **TOOL WORKFLOW**:
+   - search_companies → get company_number
+   - get_directors → get EXACT director names (use these names ONLY)
+   - get_shareholders → get EXACT owner names
+   - If tool returns empty/error → say "I don't have that information"
 
-If you cannot find information, say so clearly. Do not make up data.
+4. **VOICE RULES**:
+   - Keep responses SHORT
+   - Company numbers: say digit by digit
+   - Only answer what was asked
 
-Available tools:
-- search_companies: Find companies by name, SIC code, or postcode
-- get_company_details: Get full details for a company
-- get_directors: Get directors for a company (fetches from API if needed)
-- get_company_website: Find website for a company
-- get_company_emails: Get known emails for a company
-- find_email_for_person: Find email for a specific person (uses Hunter.io credits)
-- get_company_phone: Get phone number for a company
+If you ever feel tempted to guess or fill in a gap - STOP and say "I don't have that information" instead.
 """
 
 
@@ -108,39 +101,56 @@ def process_with_gemini(user_message, conversation_history=None):
         # Check if model wants to call functions
         function_calls = []
         final_response = None
+        max_iterations = 10  # Prevent infinite loops
         
-        while response.candidates[0].content.parts:
-            part = response.candidates[0].content.parts[0]
+        for _ in range(max_iterations):
+            if not response.candidates or not response.candidates[0].content.parts:
+                break
+                
+            parts = response.candidates[0].content.parts
             
-            # Check for function call
-            if hasattr(part, 'function_call') and part.function_call:
-                fc = part.function_call
+            # Collect ALL function calls from this response
+            pending_calls = []
+            for part in parts:
+                if hasattr(part, 'function_call') and part.function_call:
+                    pending_calls.append(part.function_call)
+                elif hasattr(part, 'text') and part.text:
+                    final_response = part.text
+            
+            # If no function calls, we're done
+            if not pending_calls:
+                break
+            
+            # Execute ALL function calls and collect results
+            function_responses = []
+            for fc in pending_calls:
                 tool_name = fc.name
                 parameters = dict(fc.args) if fc.args else {}
                 
                 # Execute the tool via MCP
                 tool_result = call_mcp_tool(tool_name, parameters)
+                print(f"🔧 Tool: {tool_name} | Params: {parameters}")
+                print(f"   Result: {str(tool_result)[:200]}...")
                 function_calls.append({
                     "tool": tool_name,
                     "parameters": parameters,
                     "result": tool_result
                 })
                 
-                # Send function result back to model
-                response = chat.send_message(
-                    genai.protos.Content(
-                        parts=[genai.protos.Part(
-                            function_response=genai.protos.FunctionResponse(
-                                name=tool_name,
-                                response={"result": tool_result}
-                            )
-                        )]
+                # Add to response batch
+                function_responses.append(
+                    genai.protos.Part(
+                        function_response=genai.protos.FunctionResponse(
+                            name=tool_name,
+                            response={"result": tool_result}
+                        )
                     )
                 )
-            else:
-                # Text response
-                final_response = part.text
-                break
+            
+            # Send ALL function results back to model at once
+            response = chat.send_message(
+                genai.protos.Content(parts=function_responses)
+            )
         
         return {
             "response": final_response or "I couldn't process that request.",
@@ -171,6 +181,10 @@ def chat():
     result = process_with_gemini(user_message, history)
     return jsonify(result)
 
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204  # No content
 
 @app.route('/api/health', methods=['GET'])
 def health():
@@ -458,11 +472,76 @@ MYAIEA_HTML = '''
             background: #ff4757;
             border-radius: 50%;
         }
+        
+        /* Settings */
+        .settings-btn {
+            background: none;
+            border: none;
+            font-size: 1.4rem;
+            cursor: pointer;
+            padding: 0.5rem;
+            opacity: 0.6;
+            transition: opacity 0.2s, transform 0.2s;
+        }
+        .settings-btn:hover {
+            opacity: 1;
+            transform: rotate(30deg);
+        }
+        .settings-panel {
+            display: none;
+            position: absolute;
+            bottom: 60px;
+            right: 0;
+            background: rgba(30, 30, 40, 0.98);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 12px;
+            padding: 1rem;
+            min-width: 200px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            z-index: 100;
+        }
+        .settings-panel.open { display: block; }
+        .settings-group {
+            margin-bottom: 1rem;
+        }
+        .settings-group:last-child { margin-bottom: 0; }
+        .settings-label {
+            font-size: 0.75rem;
+            color: #888;
+            text-transform: uppercase;
+            margin-bottom: 0.5rem;
+        }
+        .settings-options {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .settings-opt {
+            flex: 1;
+            padding: 0.5rem;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            background: rgba(0,0,0,0.3);
+            color: #aaa;
+            font-size: 0.8rem;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.2s;
+        }
+        .settings-opt:hover { border-color: #00d9ff; color: #fff; }
+        .settings-opt.active {
+            background: linear-gradient(90deg, #00d9ff33, #00ff8833);
+            border-color: #00ff88;
+            color: #fff;
+        }
+        
+        /* Hide elements based on settings */
+        .lips-container.hide-lips .lips { display: none; }
+        .lips-container.hide-eq .equalizer { display: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>MyAiEa</h1>
+        <img src="/static/myaiea-logo.png" alt="MyAiEa" style="max-width: 280px; margin-bottom: 0.5rem;">
         <p class="subtitle">Your AI Company Data Assistant</p>
         
         <!-- Animated Lips with Equalizer -->
@@ -511,22 +590,53 @@ MYAIEA_HTML = '''
             <span class="status-text" id="status-text">Click to speak</span>
         </div>
         
-        <!-- Controls -->
+        <!-- Voice Toggle -->
+        <div style="display: flex; align-items: center; justify-content: center; gap: 15px; margin-bottom: 1.5rem;">
+            <span style="color: #888;">Voice</span>
+            <label style="position: relative; width: 60px; height: 30px; display: inline-block;">
+                <input type="checkbox" id="voice-toggle" onchange="toggleVoice(this.checked)" style="opacity: 0; width: 0; height: 0;">
+                <span id="toggle-slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #333; border-radius: 30px; transition: 0.3s;"></span>
+                <span id="toggle-knob" style="position: absolute; content: ''; height: 24px; width: 24px; left: 3px; bottom: 3px; background-color: white; border-radius: 50%; transition: 0.3s;"></span>
+            </label>
+            <span id="voice-status" style="color: #888; min-width: 30px;">OFF</span>
+        </div>
+        
+        <!-- Stop button -->
         <div class="controls">
-            <button class="btn btn-primary" id="speak-btn" onclick="toggleListening()">
-                🎤 Hold to Speak
-            </button>
             <button class="btn btn-secondary" onclick="stopSpeaking()">
                 ⏹️ Stop
+            </button>
+            <button class="btn btn-secondary" onclick="testMic()" style="margin-left: 10px;">
+                🔧 Test Mic
             </button>
         </div>
         
         <!-- Text input fallback -->
-        <div class="text-input-container">
+        <div class="text-input-container" style="position: relative;">
             <input type="text" class="text-input" id="text-input" 
                    placeholder="Or type your question here..." 
                    onkeypress="if(event.key==='Enter') sendTextMessage()">
             <button class="btn btn-primary" onclick="sendTextMessage()">Send</button>
+            <button class="settings-btn" onclick="toggleSettings()" title="Settings">⚙️</button>
+            
+            <!-- Settings Panel -->
+            <div class="settings-panel" id="settings-panel">
+                <div class="settings-group">
+                    <div class="settings-label">Visualization</div>
+                    <div class="settings-options">
+                        <div class="settings-opt active" onclick="setViz('both')" id="viz-both">Both</div>
+                        <div class="settings-opt" onclick="setViz('lips')" id="viz-lips">Lips</div>
+                        <div class="settings-opt" onclick="setViz('eq')" id="viz-eq">Bars</div>
+                    </div>
+                </div>
+                <div class="settings-group">
+                    <div class="settings-label">Voice</div>
+                    <div class="settings-options">
+                        <div class="settings-opt active" onclick="setVoiceGender('female')" id="voice-female">Female</div>
+                        <div class="settings-opt" onclick="setVoiceGender('male')" id="voice-male">Male</div>
+                    </div>
+                </div>
+            </div>
         </div>
         
         <!-- Transcript -->
@@ -553,6 +663,8 @@ MYAIEA_HTML = '''
         let conversationHistory = [];
         let audioContext = null;
         let analyser = null;
+        let currentViz = 'both';  // 'both', 'lips', 'eq'
+        let currentVoiceGender = 'female';  // 'female', 'male'
         
         // Initialize speech recognition
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -569,8 +681,11 @@ MYAIEA_HTML = '''
             
             recognition.onend = () => {
                 isListening = false;
-                if (!isSpeaking) {
-                    updateStatus('idle', 'Click to speak');
+                if (voiceOn && !isSpeaking) {
+                    // Restart if toggle still on
+                    setTimeout(() => recognition.start(), 100);
+                } else if (!isSpeaking) {
+                    updateStatus('idle', 'Voice off');
                 }
             };
             
@@ -586,23 +701,95 @@ MYAIEA_HTML = '''
             
             recognition.onerror = (event) => {
                 console.error('Speech recognition error:', event.error);
-                updateStatus('idle', 'Click to speak');
+                if (event.error === 'network' || event.error === 'not-allowed' || event.error === 'audio-capture') {
+                    // Stop trying on fatal errors
+                    voiceOn = false;
+                    document.getElementById('voice-toggle').checked = false;
+                    document.getElementById('toggle-slider').style.background = '#333';
+                    document.getElementById('toggle-knob').style.left = '3px';
+                    document.getElementById('voice-status').textContent = 'OFF';
+                    document.getElementById('voice-status').style.color = '#888';
+                    updateStatus('idle', event.error === 'network' ? 'Network error' : 'Mic error');
+                }
             };
         }
         
-        // Toggle listening
-        function toggleListening() {
-            if (!recognition) {
-                alert('Speech recognition not supported in this browser. Please use Chrome.');
-                return;
-            }
+        let voiceOn = false;
+        
+        // Toggle voice on/off
+        function toggleVoice(checked) {
+            voiceOn = checked;
+            const slider = document.getElementById('toggle-slider');
+            const knob = document.getElementById('toggle-knob');
+            const status = document.getElementById('voice-status');
             
-            if (isListening) {
-                recognition.stop();
-            } else {
+            if (voiceOn) {
+                // ON
+                slider.style.background = 'linear-gradient(90deg, #00d9ff, #00ff88)';
+                knob.style.left = '33px';
+                status.textContent = 'ON';
+                status.style.color = '#00ff88';
                 recognition.start();
+            } else {
+                // OFF
+                slider.style.background = '#333';
+                knob.style.left = '3px';
+                status.textContent = 'OFF';
+                status.style.color = '#888';
+                recognition.stop();
             }
         }
+        
+        // Old toggle function (keep for compatibility)
+        function toggleListening() {
+            const toggle = document.getElementById('voice-toggle');
+            toggle.checked = !toggle.checked;
+            toggleVoice(toggle.checked);
+        }
+        
+        // Test mic access directly
+        async function testMic() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                alert('✅ Mic works! Stream active. Stopping...');
+                stream.getTracks().forEach(t => t.stop());
+            } catch (e) {
+                alert('❌ Mic error: ' + e.message);
+            }
+        }
+        
+        // Settings functions
+        function toggleSettings() {
+            document.getElementById('settings-panel').classList.toggle('open');
+        }
+        
+        function setViz(mode) {
+            currentViz = mode;
+            const container = document.querySelector('.lips-container');
+            container.classList.remove('hide-lips', 'hide-eq');
+            
+            if (mode === 'lips') container.classList.add('hide-eq');
+            else if (mode === 'eq') container.classList.add('hide-lips');
+            
+            // Update active states
+            document.querySelectorAll('[id^="viz-"]').forEach(el => el.classList.remove('active'));
+            document.getElementById('viz-' + mode).classList.add('active');
+        }
+        
+        function setVoiceGender(gender) {
+            currentVoiceGender = gender;
+            document.querySelectorAll('[id^="voice-f"], [id^="voice-m"]').forEach(el => el.classList.remove('active'));
+            document.getElementById('voice-' + gender).classList.add('active');
+        }
+        
+        // Close settings when clicking outside
+        document.addEventListener('click', (e) => {
+            const panel = document.getElementById('settings-panel');
+            const btn = document.querySelector('.settings-btn');
+            if (panel.classList.contains('open') && !panel.contains(e.target) && e.target !== btn) {
+                panel.classList.remove('open');
+            }
+        });
         
         // Process user input
         async function processUserInput(text) {
@@ -661,26 +848,52 @@ MYAIEA_HTML = '''
             
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.rate = 1.0;
-            utterance.pitch = 1.0;
             utterance.volume = 1.0;
             
-            // Try to get a nice British voice
+            // Select voice based on gender preference
             const voices = synthesis.getVoices();
-            const britishVoice = voices.find(v => v.lang === 'en-GB') || voices[0];
-            if (britishVoice) {
-                utterance.voice = britishVoice;
+            let selectedVoice = null;
+            
+            if (currentVoiceGender === 'female') {
+                // Prefer British female voices
+                selectedVoice = voices.find(v => v.lang === 'en-GB' && v.name.toLowerCase().includes('female')) ||
+                               voices.find(v => v.lang === 'en-GB' && (v.name.includes('Samantha') || v.name.includes('Kate') || v.name.includes('Fiona'))) ||
+                               voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('female')) ||
+                               voices.find(v => v.lang === 'en-GB');
+                utterance.pitch = 1.1;
+            } else {
+                // Prefer British male voices  
+                selectedVoice = voices.find(v => v.lang === 'en-GB' && v.name.toLowerCase().includes('male')) ||
+                               voices.find(v => v.lang === 'en-GB' && (v.name.includes('Daniel') || v.name.includes('Oliver') || v.name.includes('Arthur'))) ||
+                               voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('male')) ||
+                               voices.find(v => v.lang === 'en-GB');
+                utterance.pitch = 0.9;
+            }
+            
+            if (selectedVoice) {
+                utterance.voice = selectedVoice;
             }
             
             utterance.onstart = () => {
                 isSpeaking = true;
+                // STOP mic while speaking to prevent echo
+                if (recognition && isListening) {
+                    recognition.stop();
+                }
                 updateStatus('speaking', 'Speaking...');
                 startLipAnimation();
             };
             
             utterance.onend = () => {
                 isSpeaking = false;
-                updateStatus('idle', 'Click to speak');
                 stopLipAnimation();
+                // Restart mic if voice mode still on
+                if (voiceOn) {
+                    updateStatus('listening', 'Listening...');
+                    setTimeout(() => recognition.start(), 300);
+                } else {
+                    updateStatus('idle', 'Voice off');
+                }
             };
             
             synthesis.speak(utterance);

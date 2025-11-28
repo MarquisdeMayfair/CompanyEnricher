@@ -30,7 +30,7 @@ COMPANIES_HOUSE_API_KEY = os.getenv('COMPANIES_HOUSE_API_KEY')
 MCP_TOOLS = [
     {
         "name": "search_companies",
-        "description": "Search for companies by name, SIC code, or postcode. Returns matching companies from the database.",
+        "description": "Search for companies by name, SIC code, or postcode. Returns: company_name, company_number, address, sic_code. Use company_number with other tools.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -55,7 +55,7 @@ MCP_TOOLS = [
     },
     {
         "name": "get_company_details",
-        "description": "Get full details for a specific company by company number",
+        "description": "Get full company details. Returns: name, address, incorporation_date, status, sic_code, website, phone, confirmation_statement_due, accounts_due. Use for ANY company info questions.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -69,7 +69,7 @@ MCP_TOOLS = [
     },
     {
         "name": "get_directors",
-        "description": "Get directors/officers for a company. Fetches from API if not in database.",
+        "description": "Get directors/officers for a company. Returns: list of officers with name and role. NOTE: One person may have multiple roles (e.g. director AND secretary). Count unique NAMES not roles.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -83,7 +83,7 @@ MCP_TOOLS = [
     },
     {
         "name": "get_company_website",
-        "description": "Get or find the website for a company. Tries database first, then attempts to find it.",
+        "description": "Get or find the website URL for a company. Returns: website domain. Tries database first, then attempts to discover it.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -101,7 +101,7 @@ MCP_TOOLS = [
     },
     {
         "name": "get_company_emails",
-        "description": "Get known email addresses for a company from the database",
+        "description": "Get known email addresses for a company. Returns: list of emails with source and verification status.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -115,7 +115,7 @@ MCP_TOOLS = [
     },
     {
         "name": "find_email_for_person",
-        "description": "Find email address for a specific person at a company using Hunter.io. Uses credits.",
+        "description": "Find email for a specific person at a company using Hunter.io. Returns: email address. COSTS CREDITS - only use when specifically asked for a person's email.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -141,7 +141,53 @@ MCP_TOOLS = [
     },
     {
         "name": "get_company_phone",
-        "description": "Get the phone number for a company from the database",
+        "description": "Get the main phone number for a company. Returns: phone number and source.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "company_number": {
+                    "type": "string",
+                    "description": "The Companies House company number"
+                }
+            },
+            "required": ["company_number"]
+        }
+    },
+    {
+        "name": "get_shareholders",
+        "description": "Get persons with significant control (PSC) - shareholders who own 25%+ of the company. Returns: names, ownership percentages, whether individual or corporate.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "company_number": {
+                    "type": "string",
+                    "description": "The Companies House company number"
+                }
+            },
+            "required": ["company_number"]
+        }
+    },
+    {
+        "name": "get_filing_history",
+        "description": "Get company filing history - all documents filed with Companies House. Returns: list of filings with dates, types (accounts, confirmation statements, changes). Useful for due diligence.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "company_number": {
+                    "type": "string",
+                    "description": "The Companies House company number"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of filings to return (default 10)"
+                }
+            },
+            "required": ["company_number"]
+        }
+    },
+    {
+        "name": "get_company_charges",
+        "description": "Get company charges (loans, mortgages, debentures). Returns: whether company has charges, details of any outstanding charges. Indicates financial obligations.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -203,12 +249,12 @@ def tool_search_companies(company_name=None, sic_code=None, postcode_prefix=None
 
 
 def tool_get_company_details(company_number):
-    """Get full company details"""
+    """Get full company details including live data from Companies House API"""
     try:
         with get_db() as conn:
             cursor = conn.cursor()
             
-            # Get company
+            # Get company from database
             cursor.execute("SELECT * FROM companies WHERE company_number = ?", (company_number,))
             company = cursor.fetchone()
             
@@ -227,7 +273,7 @@ def tool_get_company_details(company_number):
             cursor.execute("SELECT * FROM phones WHERE company_number = ?", (company_number,))
             phones = [dict(p) for p in cursor.fetchall()]
             
-            return {
+            result = {
                 "success": True,
                 "company": {
                     "name": company["company_name"],
@@ -243,6 +289,29 @@ def tool_get_company_details(company_number):
                 "emails": emails,
                 "phones": phones
             }
+            
+            # Fetch live data from Companies House API (confirmation statement, accounts due, etc.)
+            if COMPANIES_HOUSE_API_KEY:
+                try:
+                    api_response = requests.get(
+                        f"https://api.company-information.service.gov.uk/company/{company_number}",
+                        auth=(COMPANIES_HOUSE_API_KEY, ''),
+                        timeout=5
+                    )
+                    if api_response.status_code == 200:
+                        api_data = api_response.json()
+                        # Add confirmation statement info
+                        conf_stmt = api_data.get('confirmation_statement', {})
+                        result["company"]["confirmation_statement_due"] = conf_stmt.get('next_due')
+                        result["company"]["confirmation_statement_last"] = conf_stmt.get('last_made_up_to')
+                        # Add accounts info
+                        accounts = api_data.get('accounts', {})
+                        result["company"]["accounts_due"] = accounts.get('next_due')
+                        result["company"]["accounts_last"] = accounts.get('last_accounts', {}).get('made_up_to')
+                except:
+                    pass  # API call failed, continue with database data
+            
+            return result
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -261,7 +330,7 @@ def tool_get_directors(company_number):
                 return {
                     "success": True,
                     "source": "database",
-                    "directors": [{"name": d["name"], "role": d["role"]} for d in directors]
+                    "directors": [{"name": d["name"], "role": d["officer_role"]} for d in directors]
                 }
             
             # Fetch from Companies House API
@@ -286,16 +355,17 @@ def tool_get_directors(company_number):
                             continue
                         
                         name = item.get('name', '')
-                        role = item.get('officer_role', '')
+                        officer_role = item.get('officer_role', '')
+                        appointed_on = item.get('appointed_on', '')
                         
-                        officers.append({"name": name, "role": role})
+                        officers.append({"name": name, "role": officer_role})
                         
                         # Save to database if we have company_id
                         if company_id:
                             cursor.execute("""
-                                INSERT OR IGNORE INTO directors (company_id, company_number, name, role)
-                                VALUES (?, ?, ?, ?)
-                            """, (company_id, company_number, name, role))
+                                INSERT OR IGNORE INTO directors (company_id, company_number, name, officer_role, appointed_on)
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (company_id, company_number, name, officer_role, appointed_on))
                     
                     conn.commit()
                     
@@ -449,6 +519,151 @@ def tool_get_company_phone(company_number):
         return {"success": False, "error": str(e)}
 
 
+def tool_get_shareholders(company_number):
+    """Get persons with significant control (shareholders with 25%+ ownership)"""
+    if not COMPANIES_HOUSE_API_KEY:
+        return {"success": False, "error": "Companies House API key not configured"}
+    
+    try:
+        response = requests.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}/persons-with-significant-control",
+            auth=(COMPANIES_HOUSE_API_KEY, ''),
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            shareholders = []
+            
+            for item in data.get('items', []):
+                if item.get('ceased'):
+                    continue
+                    
+                shareholder = {
+                    "name": item.get('name', item.get('name_elements', {}).get('forename', '') + ' ' + item.get('name_elements', {}).get('surname', '')),
+                    "type": "corporate" if "corporate" in item.get('kind', '') else "individual",
+                    "notified_on": item.get('notified_on'),
+                    "natures_of_control": item.get('natures_of_control', [])
+                }
+                
+                # Add ownership details if available
+                if 'identification' in item:
+                    shareholder['registration_number'] = item['identification'].get('registration_number')
+                    shareholder['legal_form'] = item['identification'].get('legal_form')
+                
+                shareholders.append(shareholder)
+            
+            return {
+                "success": True,
+                "shareholders": shareholders,
+                "total": len(shareholders)
+            }
+        else:
+            return {"success": False, "error": f"API returned status {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_get_filing_history(company_number, limit=10):
+    """Get company filing history from Companies House"""
+    if not COMPANIES_HOUSE_API_KEY:
+        return {"success": False, "error": "Companies House API key not configured"}
+    
+    try:
+        response = requests.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}/filing-history",
+            auth=(COMPANIES_HOUSE_API_KEY, ''),
+            params={"items_per_page": limit},
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            filings = []
+            
+            for item in data.get('items', []):
+                filing = {
+                    "date": item.get('date'),
+                    "type": item.get('type'),
+                    "category": item.get('category'),
+                    "description": item.get('description', '').replace('-', ' ').title(),
+                    "pages": item.get('pages')
+                }
+                filings.append(filing)
+            
+            return {
+                "success": True,
+                "filings": filings,
+                "total": data.get('total_count', len(filings))
+            }
+        else:
+            return {"success": False, "error": f"API returned status {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_get_company_charges(company_number):
+    """Get company charges (loans, mortgages, debentures)"""
+    if not COMPANIES_HOUSE_API_KEY:
+        return {"success": False, "error": "Companies House API key not configured"}
+    
+    try:
+        # First check if company has charges from profile
+        profile_response = requests.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}",
+            auth=(COMPANIES_HOUSE_API_KEY, ''),
+            timeout=10
+        )
+        
+        if profile_response.status_code == 200:
+            profile = profile_response.json()
+            has_charges = profile.get('has_charges', False)
+            
+            if not has_charges:
+                return {
+                    "success": True,
+                    "has_charges": False,
+                    "message": "This company has no charges (loans or mortgages) registered"
+                }
+        
+        # Get charge details
+        response = requests.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}/charges",
+            auth=(COMPANIES_HOUSE_API_KEY, ''),
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            charges = []
+            
+            for item in data.get('items', []):
+                charge = {
+                    "status": item.get('status'),
+                    "created_on": item.get('created_on'),
+                    "delivered_on": item.get('delivered_on'),
+                    "charge_code": item.get('charge_code'),
+                    "classification": item.get('classification', {}).get('description'),
+                    "persons_entitled": [p.get('name') for p in item.get('persons_entitled', [])]
+                }
+                
+                if item.get('satisfied_on'):
+                    charge['satisfied_on'] = item.get('satisfied_on')
+                    
+                charges.append(charge)
+            
+            return {
+                "success": True,
+                "has_charges": len(charges) > 0,
+                "charges": charges,
+                "total": len(charges)
+            }
+        else:
+            return {"success": False, "error": f"API returned status {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # Tool dispatcher
 TOOL_FUNCTIONS = {
     "search_companies": tool_search_companies,
@@ -457,7 +672,10 @@ TOOL_FUNCTIONS = {
     "get_company_website": tool_get_company_website,
     "get_company_emails": tool_get_company_emails,
     "find_email_for_person": tool_find_email_for_person,
-    "get_company_phone": tool_get_company_phone
+    "get_company_phone": tool_get_company_phone,
+    "get_shareholders": tool_get_shareholders,
+    "get_filing_history": tool_get_filing_history,
+    "get_company_charges": tool_get_company_charges
 }
 
 
@@ -478,13 +696,17 @@ def execute_tool():
     tool_name = data.get('tool')
     parameters = data.get('parameters', {})
     
+    print(f"🔧 MCP Tool called: {tool_name} with params: {parameters}")
+    
     if tool_name not in TOOL_FUNCTIONS:
         return jsonify({"error": f"Unknown tool: {tool_name}"}), 400
     
     try:
         result = TOOL_FUNCTIONS[tool_name](**parameters)
+        print(f"📋 Tool result: {result}")
         return jsonify(result)
     except Exception as e:
+        print(f"❌ Tool error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
