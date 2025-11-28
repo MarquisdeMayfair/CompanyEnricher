@@ -546,6 +546,25 @@
             opacity: 0.7;
         }
         
+        .phone-link {
+            color: #22c55e;
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-family: 'JetBrains Mono', monospace;
+            transition: opacity 0.2s;
+        }
+        
+        .phone-link:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+        
+        .phone-source {
+            font-size: 0.65rem;
+            opacity: 0.7;
+            margin-top: 2px;
+        }
+        
         .source-free {
             color: var(--success);
         }
@@ -755,15 +774,13 @@
                 <div class="form-group">
                     <label for="sic-filter">SIC Category</label>
                     <select id="sic-filter">
-                        <option value="all_target">All Target SIC Codes</option>
-                        <option value="accountants">Accountants (69201, 69203)</option>
-                        <option value="management_consultancy">Management Consultancy (70229)</option>
-                        <option value="business_support">Business Support (82990, 82110)</option>
-                        <option value="69201">69201 - Accounting & Auditing</option>
-                        <option value="69203">69203 - Tax Consultancy</option>
-                        <option value="70229">70229 - Management Consultancy</option>
-                        <option value="82990">82990 - Business Support Services</option>
-                        <option value="82110">82110 - Office Admin Services</option>
+                        <optgroup label="⭐ My Favorites" id="favorites-group">
+                            <option value="loading" disabled>Loading...</option>
+                        </optgroup>
+                        <optgroup label="─────────────────────────"></optgroup>
+                        <optgroup label="📋 All SIC Codes" id="all-sics-group">
+                            <option value="loading" disabled>Loading...</option>
+                        </optgroup>
                     </select>
                 </div>
                 
@@ -787,6 +804,15 @@
                 <div class="form-group">
                     <label for="limit">Number of Records</label>
                     <input type="number" id="limit" value="300" min="1" max="1000">
+                </div>
+                
+                <div class="form-group">
+                    <label for="enrichment-filter">Enrichment Status</label>
+                    <select id="enrichment-filter">
+                        <option value="not_attempted">🆕 Unattempted Only</option>
+                        <option value="retry">🔄 Include Failed (Retry)</option>
+                        <option value="all">📋 All Records</option>
+                    </select>
                 </div>
             </div>
             
@@ -866,6 +892,10 @@
                     <span class="stat-label">Websites</span>
                 </div>
                 <div class="stat">
+                    <span class="stat-value" id="stat-phones">0</span>
+                    <span class="stat-label">📞 Phones</span>
+                </div>
+                <div class="stat">
                     <span class="stat-value" id="stat-emails">0</span>
                     <span class="stat-label">Total Emails</span>
                 </div>
@@ -907,6 +937,7 @@
                             <th>SIC Code</th>
                             <th>Status</th>
                             <th>Website</th>
+                            <th>Phone</th>
                             <th>Directors</th>
                             <th>Emails</th>
                         </tr>
@@ -955,6 +986,52 @@
         let totalDirectors = 0;
         let totalDomains = 0;
         let totalEmails = 0;
+        let totalPhones = 0;
+        
+        // Load SIC codes on page load
+        async function loadSicCodes() {
+            try {
+                const response = await fetch('/api/sic-codes');
+                const data = await response.json();
+                
+                // Load favorites
+                const favGroup = document.getElementById('favorites-group');
+                if (favGroup && data.favorites) {
+                    favGroup.innerHTML = '';
+                    data.favorites.forEach((fav, index) => {
+                        const option = document.createElement('option');
+                        option.value = fav.id;
+                        option.textContent = fav.name;
+                        if (index === 0) option.selected = true;
+                        favGroup.appendChild(option);
+                    });
+                }
+                
+                // Load all SIC codes with descriptions
+                const sicGroup = document.getElementById('all-sics-group');
+                if (sicGroup && data.all_sics) {
+                    sicGroup.innerHTML = '';
+                    
+                    data.all_sics.forEach(sic => {
+                        const option = document.createElement('option');
+                        option.value = sic.code;
+                        // Format: "69201 - Accounting & Auditing (12,345)"
+                        const desc = sic.description !== 'Unknown' ? sic.description : '';
+                        option.textContent = desc 
+                            ? `${sic.code} - ${desc} (${sic.count.toLocaleString()})`
+                            : `${sic.code} (${sic.count.toLocaleString()})`;
+                        sicGroup.appendChild(option);
+                    });
+                    
+                    console.log(`Loaded ${data.total_sic_codes} SIC codes`);
+                }
+            } catch (error) {
+                console.error('Error loading SIC codes:', error);
+            }
+        }
+        
+        // Load SIC codes when page loads
+        document.addEventListener('DOMContentLoaded', loadSicCodes);
         
         async function importCSV(event) {
             const file = event.target.files[0];
@@ -1021,15 +1098,22 @@
                         return;
                     }
                     
-                    companies = data.companies;
+                    companies = data.companies.map(c => ({
+                        ...c,
+                        phones: c.phones || [],
+                        emails: c.emails || [],
+                        directors: c.directors || []
+                    }));
                     enrichedCount = 0;
                     totalDirectors = 0;
                     totalDomains = 0;
                     totalEmails = 0;
+                    totalPhones = 0;
                     
                     // Count pre-existing data
                     companies.forEach(c => {
                         if (c.emails && c.emails.length) totalEmails += c.emails.length;
+                        if (c.phones && c.phones.length) totalPhones += c.phones.length;
                         if (c.domain) totalDomains++;
                     });
                     
@@ -1110,11 +1194,17 @@
                     return;
                 }
                 
-                companies = data.companies;
+                companies = data.companies.map(c => ({
+                    ...c,
+                    phones: c.phones || [],
+                    emails: c.emails || [],
+                    directors: c.directors || []
+                }));
                 enrichedCount = 0;
                 totalDirectors = 0;
                 totalDomains = 0;
                 totalEmails = 0;
+                totalPhones = 0;
                 
                 renderResults();
                 updateStats();
@@ -1173,6 +1263,13 @@
                         ${company.domain ? 
                             `<a href="https://${escapeHtml(company.domain)}" target="_blank" class="website-link">${escapeHtml(company.domain)}</a>
                              <span class="domain-source ${company.domain_source === 'inferred' ? 'source-free' : 'source-verified'}">${company.domain_source === 'hunter' ? '💰' : '✓'}</span>` : 
+                            '<span style="color: var(--text-dim);">—</span>'
+                        }
+                    </td>
+                    <td class="phone-cell" id="phone-${index}">
+                        ${company.phones && company.phones.length ? 
+                            `<a href="tel:${escapeHtml(company.phones[0].phone)}" class="phone-link">${escapeHtml(company.phones[0].phone)}</a>
+                             <div class="phone-source">${company.phones[0].source === 'hunter' ? '💰' : '🌐'}</div>` : 
                             '<span style="color: var(--text-dim);">—</span>'
                         }
                     </td>
@@ -1409,27 +1506,38 @@
                     otherEmails += data.other_emails || 0;
                     emailsFound += data.emails_found || 0;
                     
-                    // Update companies with email data
+                    // Update companies with email AND phone data
                     data.enriched.forEach(enriched => {
                         const companyIndex = companies.findIndex(c => c.company_number === enriched.company_number);
-                        if (companyIndex !== -1 && enriched.emails && enriched.emails.length > 0) {
-                            // Replace inferred emails with real Hunter ones
-                            if (enriched.replaces_inferred) {
-                                // Remove inferred emails, keep real ones
-                                const realEmails = (companies[companyIndex].emails || []).filter(
-                                    e => e.source !== 'inferred'
-                                );
-                                companies[companyIndex].emails = [...realEmails, ...enriched.emails];
-                            } else {
-                                // Just add new emails
-                                if (!companies[companyIndex].emails) {
-                                    companies[companyIndex].emails = [];
+                        if (companyIndex !== -1) {
+                            // Handle emails
+                            if (enriched.emails && enriched.emails.length > 0) {
+                                // Replace inferred emails with real Hunter ones
+                                if (enriched.replaces_inferred) {
+                                    const realEmails = (companies[companyIndex].emails || []).filter(
+                                        e => e.source !== 'inferred'
+                                    );
+                                    companies[companyIndex].emails = [...realEmails, ...enriched.emails];
+                                } else {
+                                    if (!companies[companyIndex].emails) {
+                                        companies[companyIndex].emails = [];
+                                    }
+                                    companies[companyIndex].emails = [...companies[companyIndex].emails, ...enriched.emails];
                                 }
-                                companies[companyIndex].emails = [...companies[companyIndex].emails, ...enriched.emails];
                             }
-                            totalEmails = companies.reduce((sum, c) => sum + (c.emails?.length || 0), 0);
+                            
+                            // Handle phones
+                            if (enriched.phones && enriched.phones.length > 0) {
+                                if (!companies[companyIndex].phones) {
+                                    companies[companyIndex].phones = [];
+                                }
+                                companies[companyIndex].phones = [...companies[companyIndex].phones, ...enriched.phones];
+                            }
                         }
                     });
+                    
+                    totalEmails = companies.reduce((sum, c) => sum + (c.emails?.length || 0), 0);
+                    totalPhones = companies.reduce((sum, c) => sum + (c.phones?.length || 0), 0);
                     
                     processed += batch.length;
                     progressFill.style.width = `${(processed / selectedCompanies.length) * 100}%`;
@@ -1474,17 +1582,39 @@
                 return;
             }
             
-            // Filter to companies that need Hunter (have inferred emails or no emails)
+            // Generic email prefixes - inboxes, not personal emails
+            const GENERIC_PREFIXES = [
+                'info@', 'office@', 'contact@', 'hello@', 'enquiries@', 'enquiry@',
+                'admin@', 'accounts@', 'finance@', 'sales@', 'support@', 'help@',
+                'mail@', 'email@', 'general@', 'reception@', 'team@', 'company@'
+            ];
+            
+            function isPersonalEmail(email) {
+                if (!email) return false;
+                const emailLower = email.toLowerCase();
+                // Check if generic
+                for (const prefix of GENERIC_PREFIXES) {
+                    if (emailLower.startsWith(prefix)) return false;
+                }
+                // Check for firstname.lastname pattern
+                const localPart = emailLower.split('@')[0];
+                if (localPart.includes('.') && localPart.length > 3) return true;
+                if (/^[a-z]+$/.test(localPart) && localPart.length > 2) return true;
+                return false;
+            }
+            
+            // Filter to companies that need Hunter (only have generic emails or no emails)
             const companiesNeedingHunter = selectedIndices.filter(i => {
                 const emails = companies[i].emails || [];
-                const hasRealEmails = emails.some(e => 
-                    e.source === 'website_scrape' || e.source === 'website_mailto' || e.source === 'imported'
+                const hasPersonalEmails = emails.some(e => 
+                    (e.source === 'website_scrape' || e.source === 'website_mailto' || e.source === 'imported')
+                    && isPersonalEmail(e.email)
                 );
-                return !hasRealEmails;  // Only include if no real emails
+                return !hasPersonalEmails;  // Include if no PERSONAL emails (generic ok)
             });
             
             if (companiesNeedingHunter.length === 0) {
-                showToast('All selected companies already have real emails - no Hunter needed!', 'success');
+                showToast('All selected companies already have personal emails - no Hunter needed!', 'success');
                 return;
             }
             
@@ -1772,6 +1902,7 @@
             let invalidCount = 0;
             let riskyCount = 0;
             let totalEmailCount = 0;
+            let totalPhoneCount = 0;
             
             companies.forEach(c => {
                 if (c.emails) {
@@ -1787,11 +1918,15 @@
                         }
                     });
                 }
+                if (c.phones) {
+                    totalPhoneCount += c.phones.length;
+                }
             });
             
             document.getElementById('stat-total').textContent = companies.length.toLocaleString();
             document.getElementById('stat-directors').textContent = totalDirectors.toLocaleString();
             document.getElementById('stat-domains').textContent = totalDomains.toLocaleString();
+            document.getElementById('stat-phones').textContent = totalPhoneCount.toLocaleString();
             document.getElementById('stat-emails').textContent = totalEmailCount.toLocaleString();
             document.getElementById('stat-valid').textContent = validCount.toLocaleString();
             document.getElementById('stat-invalid').textContent = invalidCount.toLocaleString();

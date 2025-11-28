@@ -1,0 +1,73 @@
+# Company Enrichment Tool - Docker Compose Configuration
+#
+# Quick Start:
+#   1. Copy .env.example to .env and fill in your API keys
+#   2. docker-compose up -d
+#   3. Open http://localhost:5000
+#
+# Initial Database Import (first time only):
+#   docker-compose run --rm app python import_csv.py /data/BasicCompanyDataAsOneFile.csv
+#
+# Monthly CSV Update:
+#   docker-compose run --rm app python update_from_csv.py /data/new_companies_house.csv
+
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: company-enricher
+    ports:
+      - "5000:5000"
+    volumes:
+      # Mount data directory for persistence
+      - ./data:/data
+      # Mount .env file for API keys
+      - ./.env:/app/.env:ro
+    environment:
+      - FLASK_ENV=production
+      - DB_PATH=/data/companies.db
+      - CSV_PATH=/data/BasicCompanyDataAsOneFile.csv
+    restart: unless-stopped
+    
+    # Resource limits (adjust based on your server)
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Optional: Development mode with auto-reload
+  dev:
+    build: .
+    container_name: company-enricher-dev
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/data
+      - ./.env:/app/.env:ro
+      # Mount source code for live reloading
+      - ./app.py:/app/app.py
+      - ./database.py:/app/database.py
+      - ./static:/app/static
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+      - DB_PATH=/data/companies.db
+      - CSV_PATH=/data/BasicCompanyDataAsOneFile.csv
+    command: ["python", "app.py"]
+    profiles:
+      - dev
+
+volumes:
+  data:
+    driver: local
+
+# Network configuration
+networks:
+  default:
+    name: company-enricher-network
+

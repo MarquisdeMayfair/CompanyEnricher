@@ -6,6 +6,14 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import time
 
+# Database imports
+from database import (
+    get_db, search_companies, count_companies, get_company_by_number,
+    add_director, add_email, add_phone, update_enrichment_status,
+    update_company_website, update_company_phone, update_email_verification,
+    get_db_stats
+)
+
 load_dotenv()
 
 app = Flask(__name__, static_folder='static')
@@ -14,6 +22,7 @@ CORS(app)
 HUNTER_API_KEY = os.getenv('HUNTER_API_KEY')
 COMPANIES_HOUSE_API_KEY = os.getenv('COMPANIES_HOUSE_API_KEY')
 CSV_PATH = os.getenv('CSV_PATH', 'BasicCompanyDataAsOneFile-2025-11-01.csv')
+USE_DATABASE = os.getenv('USE_DATABASE', 'true').lower() == 'true'  # Default to database
 
 # SIC Code mappings
 SIC_CODES = {
@@ -303,21 +312,82 @@ def get_company_filing_description(company_number):
 def extract_emails_from_text(text):
     """Extract email addresses from text using regex"""
     import re
+    from urllib.parse import unquote
     if not text:
         return []
+    
+    # First, decode any URL-encoded characters (like %20 for space)
+    text = unquote(text)
+    
+    # Remove common HTML artifacts that might prefix emails
+    text = re.sub(r'mailto:', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'&nbsp;', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'&#\d+;', ' ', text)  # HTML entities like &#64;
+    
     email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
     emails = list(set(re.findall(email_pattern, text.lower())))
-    # Filter out common false positives
+    
+    # Filter out common false positives and clean emails
     filtered = []
     for email in emails:
+        # Clean up any remaining URL encoding in the email itself
+        email = unquote(email).strip()
+        
         # Skip image files, CSS, etc.
-        if any(ext in email for ext in ['.png', '.jpg', '.gif', '.css', '.js', '.svg']):
+        if any(ext in email for ext in ['.png', '.jpg', '.gif', '.css', '.js', '.svg', '.webp']):
             continue
         # Skip example emails
         if 'example' in email or 'test@' in email or 'email@' in email:
             continue
+        # Skip if email starts with weird characters
+        if email[0] in '._-%+':
+            continue
+        # Skip if domain looks invalid
+        if '..' in email or email.endswith('.'):
+            continue
+            
         filtered.append(email)
     return filtered
+
+
+def extract_phones_from_text(text):
+    """Extract UK phone numbers from text using regex"""
+    import re
+    if not text:
+        return []
+    
+    # Clean the text
+    text = re.sub(r'&nbsp;', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'&#\d+;', ' ', text)
+    
+    # UK phone number patterns
+    # Matches: 020 1234 5678, 0207 123 4567, +44 20 1234 5678, 01onal 123456, etc.
+    patterns = [
+        # UK landlines with area code: 020 1234 5678, 0121 123 4567
+        r'0\d{2,4}[\s\-]?\d{3,4}[\s\-]?\d{3,4}',
+        # Mobile: 07xxx xxxxxx
+        r'07\d{3}[\s\-]?\d{3}[\s\-]?\d{3}',
+        # International format: +44 ...
+        r'\+44[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4}',
+        # With brackets: (020) 1234 5678
+        r'\(\d{2,5}\)[\s\-]?\d{3,4}[\s\-]?\d{3,4}',
+    ]
+    
+    phones_found = set()
+    for pattern in patterns:
+        matches = re.findall(pattern, text)
+        for match in matches:
+            # Clean and normalize the number
+            phone = re.sub(r'[\s\-\(\)]', '', match)
+            # Validate length (UK numbers are 10-11 digits, or 12-13 with +44)
+            if phone.startswith('+44'):
+                if 12 <= len(phone) <= 14:
+                    phones_found.add(phone)
+            elif phone.startswith('0'):
+                if 10 <= len(phone) <= 11:
+                    phones_found.add(phone)
+    
+    return list(phones_found)
 
 
 def scrape_website_for_emails(domain):
@@ -382,6 +452,153 @@ def scrape_website_for_emails(domain):
             continue  # Skip failed pages
     
     return emails_found
+
+
+def scrape_website_for_phones(domain):
+    """Scrape a company website for phone numbers - COMPLETELY FREE"""
+    if not domain:
+        return []
+    
+    phones_found = []
+    pages_to_try = [
+        f"https://{domain}",
+        f"https://{domain}/contact",
+        f"https://{domain}/contact-us",
+        f"https://www.{domain}",
+        f"https://www.{domain}/contact",
+    ]
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    for url in pages_to_try[:3]:  # Limit to 3 pages
+        try:
+            response = requests.get(url, headers=headers, timeout=5, allow_redirects=True)
+            if response.status_code == 200:
+                # Extract phones from HTML
+                page_phones = extract_phones_from_text(response.text)
+                for phone in page_phones:
+                    if phone not in [p['phone'] for p in phones_found]:
+                        phones_found.append({
+                            'phone': phone,
+                            'phone_type': 'main',
+                            'source': 'website',
+                            'source_url': url
+                        })
+                
+                # Also check for tel: links (higher confidence)
+                import re
+                tel_pattern = r'tel:([+\d\s\-\(\)]+)'
+                tel_phones = re.findall(tel_pattern, response.text)
+                for phone_raw in tel_phones:
+                    phone = re.sub(r'[\s\-\(\)]', '', phone_raw)
+                    if phone and len(phone) >= 10:
+                        if phone not in [p['phone'] for p in phones_found]:
+                            phones_found.append({
+                                'phone': phone,
+                                'phone_type': 'main',
+                                'source': 'website_tel',
+                                'source_url': url
+                            })
+                
+                if len(phones_found) >= 2:
+                    break  # Got enough phones
+                    
+        except Exception as e:
+            continue  # Skip failed pages
+    
+    return phones_found
+
+
+def scrape_website_for_all(domain):
+    """Scrape website for both emails AND phones in one pass - more efficient"""
+    if not domain:
+        return {'emails': [], 'phones': []}
+    
+    emails_found = []
+    phones_found = []
+    
+    pages_to_try = [
+        f"https://{domain}",
+        f"https://{domain}/contact",
+        f"https://{domain}/contact-us",
+        f"https://www.{domain}",
+        f"https://www.{domain}/contact",
+    ]
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    for url in pages_to_try[:4]:
+        try:
+            response = requests.get(url, headers=headers, timeout=5, allow_redirects=True)
+            if response.status_code == 200:
+                html = response.text
+                
+                # Extract emails
+                page_emails = extract_emails_from_text(html)
+                for email in page_emails:
+                    email_domain = email.split('@')[-1]
+                    if domain in email_domain or email_domain in domain:
+                        if email not in [e['email'] for e in emails_found]:
+                            emails_found.append({
+                                'email': email,
+                                'source': 'website_scrape',
+                                'source_label': 'Website',
+                                'url': url,
+                                'confidence': 85
+                            })
+                
+                # Check mailto: links
+                import re
+                mailto_pattern = r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
+                mailto_emails = re.findall(mailto_pattern, html.lower())
+                for email in mailto_emails:
+                    email_domain = email.split('@')[-1]
+                    if domain in email_domain or email_domain in domain:
+                        if email not in [e['email'] for e in emails_found]:
+                            emails_found.append({
+                                'email': email,
+                                'source': 'website_mailto',
+                                'source_label': 'Website',
+                                'url': url,
+                                'confidence': 95
+                            })
+                
+                # Extract phones
+                page_phones = extract_phones_from_text(html)
+                for phone in page_phones:
+                    if phone not in [p['phone'] for p in phones_found]:
+                        phones_found.append({
+                            'phone': phone,
+                            'phone_type': 'main',
+                            'source': 'website',
+                            'source_url': url
+                        })
+                
+                # Check tel: links
+                tel_pattern = r'tel:([+\d\s\-\(\)]+)'
+                tel_phones = re.findall(tel_pattern, html)
+                for phone_raw in tel_phones:
+                    phone = re.sub(r'[\s\-\(\)]', '', phone_raw)
+                    if phone and len(phone) >= 10:
+                        if phone not in [p['phone'] for p in phones_found]:
+                            phones_found.append({
+                                'phone': phone,
+                                'phone_type': 'main',
+                                'source': 'website_tel',
+                                'source_url': url
+                            })
+                
+                if len(emails_found) >= 3 and len(phones_found) >= 1:
+                    break
+                    
+        except Exception as e:
+            continue
+    
+    return {'emails': emails_found, 'phones': phones_found}
 
 
 def check_email_domain_match(email, company_name):
@@ -884,13 +1101,75 @@ def import_match():
 
 @app.route('/api/filter', methods=['POST'])
 def filter_companies():
-    """Filter companies based on criteria"""
+    """Filter companies based on criteria - uses database or CSV"""
     data = request.json
     sic_filter = data.get('sic', 'all_target')
     postcode_filter = data.get('postcode', '')
     year_filter = data.get('year', '')
+    enrichment_filter = data.get('enrichment', 'not_attempted')  # New: enrichment status filter
+    include_enriched = data.get('include_enriched', False)  # Override for retry mode
     limit = min(int(data.get('limit', 100)), 1000)  # Max 1000 at a time
     
+    if USE_DATABASE:
+        # Use database for much faster queries
+        try:
+            # Map SIC filter to codes
+            if sic_filter in SIC_CODES:
+                sic_codes = SIC_CODES[sic_filter]
+            else:
+                sic_codes = [sic_filter]
+            
+            # Handle enrichment filter
+            if enrichment_filter == 'retry':
+                include_enriched = True
+                enrichment_filter = 'retry'
+            elif enrichment_filter == 'all':
+                include_enriched = True
+            
+            results = search_companies(
+                sic_codes=sic_codes,
+                postcode_prefix=postcode_filter if postcode_filter else None,
+                year_filter=year_filter if year_filter else None,
+                status_filter='Active',
+                enrichment_filter=enrichment_filter,
+                include_enriched=include_enriched,
+                limit=limit
+            )
+            
+            # Transform to match frontend expected format
+            formatted = []
+            for company in results:
+                formatted.append({
+                    'company_name': company.get('company_name', ''),
+                    'company_number': company.get('company_number', ''),
+                    'address_line1': company.get('address_line1', ''),
+                    'address_line2': company.get('address_line2', ''),
+                    'town': company.get('post_town', ''),
+                    'county': company.get('county', ''),
+                    'postcode': company.get('postcode', ''),
+                    'status': company.get('company_status', ''),
+                    'sic_code': company.get('sic_code_1', ''),
+                    'sic_description': SIC_DESCRIPTIONS.get(company.get('sic_code_1', ''), ''),
+                    'incorporation_date': company.get('incorporation_date', ''),
+                    'domain': company.get('website', ''),
+                    'domain_source': company.get('website_source', ''),
+                    'directors': company.get('directors', []),
+                    'emails': company.get('emails', []),
+                    'phones': company.get('phones', []),
+                    'enrichment_status': company.get('enrichment_status', 'not_attempted')
+                })
+            
+            return jsonify({
+                'count': len(formatted),
+                'companies': formatted,
+                'source': 'database'
+            })
+            
+        except Exception as e:
+            print(f"Database error, falling back to CSV: {e}")
+            # Fall through to CSV
+    
+    # Fallback to CSV
     results = filter_csv(sic_filter, postcode_filter, limit, year_filter)
     
     if isinstance(results, dict) and 'error' in results:
@@ -898,7 +1177,8 @@ def filter_companies():
     
     return jsonify({
         'count': len(results),
-        'companies': results
+        'companies': results,
+        'source': 'csv'
     })
 
 
@@ -916,9 +1196,26 @@ def enrich_companies():
             time.sleep(1)  # Wait if rate limited
             directors = get_officers(company_number)
         
+        director_list = directors if isinstance(directors, list) else []
+        
+        # Save to database if enabled
+        if USE_DATABASE and director_list:
+            try:
+                with get_db() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('SELECT id FROM companies WHERE company_number = ?', (company_number,))
+                    row = cursor.fetchone()
+                    if row:
+                        company_id = row['id']
+                        for director in director_list:
+                            add_director(company_id, company_number, director)
+                        update_enrichment_status(company_number, 'success', 'fetch_directors')
+            except Exception as e:
+                print(f"Error saving directors for {company_number}: {e}")
+        
         enriched.append({
             'company_number': company_number,
-            'directors': directors if isinstance(directors, list) else []
+            'directors': director_list
         })
         
         time.sleep(0.5)  # Rate limiting - Companies House allows 600/5min
@@ -992,12 +1289,13 @@ def enrich_domains():
 
 @app.route('/api/enrich-emails-free', methods=['POST'])
 def enrich_emails_free():
-    """Enrich companies with emails using FREE methods (Website scraping + Companies House)"""
+    """Enrich companies with emails AND phones using FREE methods (Website scraping)"""
     data = request.json
     companies = data.get('companies', [])
     
     enriched = []
     emails_found = 0
+    phones_found = 0
     scraped_count = 0
     website_count = 0
     ch_count = 0
@@ -1008,20 +1306,71 @@ def enrich_emails_free():
         directors = company.get('directors', [])
         company_domain = company.get('domain', '')  # Use existing domain if we have it
         
-        # Get free emails (website scraping only - no inferred)
-        free_emails = find_free_emails(company_number, company_name, directors, company_domain)
+        company_emails = []
+        company_phones = []
+        found_domain = company_domain
         
-        if free_emails:
-            emails_found += len(free_emails)
-            for email in free_emails:
-                source = email.get('source', '')
-                if 'website' in source:
-                    scraped_count += 1
-                    website_count += 1
+        # If we have a domain, scrape for both emails AND phones in one pass
+        if company_domain:
+            scraped = scrape_website_for_all(company_domain)
+            for email in scraped['emails']:
+                email['match_type'] = 'company'
+                company_emails.append(email)
+            company_phones = scraped['phones']
+        else:
+            # Try to find/verify a domain first
+            potential_domains = infer_domain_from_company_name(company_name)
+            if potential_domains:
+                for domain in potential_domains[:2]:
+                    if verify_domain_exists(domain):
+                        found_domain = domain
+                        scraped = scrape_website_for_all(domain)
+                        for email in scraped['emails']:
+                            email['match_type'] = 'company'
+                            company_emails.append(email)
+                        company_phones = scraped['phones']
+                        break
+        
+        # Save to database if enabled
+        if USE_DATABASE and company_number:
+            try:
+                with get_db() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('SELECT id FROM companies WHERE company_number = ?', (company_number,))
+                    row = cursor.fetchone()
+                    if row:
+                        company_id = row['id']
+                        
+                        # Save website if found
+                        if found_domain and not company_domain:
+                            update_company_website(company_number, found_domain, 'inferred')
+                        
+                        # Save emails
+                        for email_data in company_emails:
+                            add_email(company_id, company_number, email_data)
+                        
+                        # Save phones
+                        for phone_data in company_phones:
+                            add_phone(company_id, company_number, phone_data)
+                        
+                        # Update status
+                        status = 'success' if (company_emails or company_phones) else 'failed'
+                        update_enrichment_status(company_number, status, 'scrape_emails')
+            except Exception as e:
+                print(f"Error saving enrichment for {company_number}: {e}")
+        
+        if company_emails:
+            emails_found += len(company_emails)
+            scraped_count += len(company_emails)
+            website_count += len(company_emails)
+        
+        if company_phones:
+            phones_found += len(company_phones)
         
         enriched.append({
             'company_number': company_number,
-            'emails': free_emails
+            'emails': company_emails,
+            'phones': company_phones
         })
         
         time.sleep(0.3)  # Be respectful when scraping
@@ -1029,10 +1378,100 @@ def enrich_emails_free():
     return jsonify({
         'enriched': enriched,
         'emails_found': emails_found,
+        'phones_found': phones_found,
         'scraped_from_website': scraped_count,
         'website': website_count,
         'companies_house': ch_count
     })
+
+
+@app.route('/api/enrich-phones', methods=['POST'])
+def enrich_phones():
+    """Enrich companies with phone numbers - Free first, Hunter fallback"""
+    data = request.json
+    companies = data.get('companies', [])
+    use_hunter = data.get('use_hunter', False)
+    
+    enriched = []
+    phones_found = 0
+    free_found = 0
+    hunter_found = 0
+    
+    for company in companies[:50]:
+        company_number = company.get('company_number', '')
+        company_domain = company.get('domain', '')
+        existing_phones = company.get('phones', [])
+        
+        # Skip if already has phone
+        if existing_phones:
+            enriched.append({
+                'company_number': company_number,
+                'phones': [],
+                'skipped': True
+            })
+            continue
+        
+        company_phones = []
+        
+        # Try free scraping first
+        if company_domain:
+            scraped_phones = scrape_website_for_phones(company_domain)
+            if scraped_phones:
+                company_phones = scraped_phones
+                free_found += len(scraped_phones)
+        
+        # Hunter fallback (if requested and no free results)
+        if not company_phones and use_hunter and company_domain:
+            hunter_phone = get_phone_from_hunter(company_domain)
+            if hunter_phone:
+                company_phones.append(hunter_phone)
+                hunter_found += 1
+        
+        phones_found += len(company_phones)
+        enriched.append({
+            'company_number': company_number,
+            'phones': company_phones
+        })
+        
+        time.sleep(0.3)
+    
+    return jsonify({
+        'enriched': enriched,
+        'phones_found': phones_found,
+        'free_found': free_found,
+        'hunter_found': hunter_found
+    })
+
+
+def get_phone_from_hunter(domain):
+    """Get phone number using Hunter.io Domain Search"""
+    if not domain or not HUNTER_API_KEY:
+        return None
+    
+    # Clean the domain
+    domain = domain.replace('http://', '').replace('https://', '').replace('www.', '').split('/')[0]
+    
+    url = "https://api.hunter.io/v2/domain-search"
+    try:
+        response = requests.get(
+            url,
+            params={'domain': domain, 'api_key': HUNTER_API_KEY},
+            timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json().get('data', {})
+            # Hunter sometimes includes phone in domain search results
+            phone = data.get('phone')
+            if phone:
+                return {
+                    'phone': phone,
+                    'phone_type': 'main',
+                    'source': 'hunter'
+                }
+    except Exception as e:
+        print(f"Error getting phone from Hunter for {domain}: {e}")
+    
+    return None
 
 
 @app.route('/api/enrich-emails', methods=['POST'])
@@ -1051,20 +1490,46 @@ def enrich_emails():
         company_domain = company.get('domain', '')
         existing_emails = company.get('emails', [])
         
-        # Check if company already has REAL emails (from website scraping)
-        has_real_emails = any(
-            e.get('source') in ['website_scrape', 'website_mailto', 'imported'] 
+        # Generic email prefixes - these are inboxes, not personal emails
+        GENERIC_PREFIXES = [
+            'info@', 'office@', 'contact@', 'hello@', 'enquiries@', 'enquiry@',
+            'admin@', 'accounts@', 'finance@', 'sales@', 'support@', 'help@',
+            'mail@', 'email@', 'general@', 'reception@', 'team@', 'company@',
+            'billing@', 'invoices@', 'hr@', 'jobs@', 'careers@', 'press@',
+            'media@', 'marketing@', 'service@', 'services@', 'customerservice@'
+        ]
+        
+        def is_personal_email(email):
+            """Check if email looks like a personal email (firstname.lastname pattern)"""
+            email_lower = email.lower()
+            # Check if it's a generic prefix
+            for prefix in GENERIC_PREFIXES:
+                if email_lower.startswith(prefix):
+                    return False
+            # Check if it contains a dot before @ (likely firstname.lastname)
+            local_part = email_lower.split('@')[0]
+            if '.' in local_part and len(local_part) > 3:
+                return True
+            # Check if local part is a single name (could be firstname@)
+            if local_part.isalpha() and len(local_part) > 2:
+                return True
+            return False
+        
+        # Only skip if we have PERSONAL emails (not generic ones)
+        has_personal_emails = any(
+            is_personal_email(e.get('email', ''))
             for e in existing_emails
+            if e.get('source') in ['website_scrape', 'website_mailto', 'imported']
         )
         
-        # Skip companies that already have real emails - don't waste Hunter credits
-        if has_real_emails:
+        # Skip companies that already have personal emails - don't waste Hunter credits
+        if has_personal_emails:
             skipped += 1
             enriched.append({
                 'company_number': company.get('company_number', ''),
                 'emails': [],  # No new emails
                 'skipped': True,
-                'reason': 'Already has real emails'
+                'reason': 'Already has personal emails'
             })
             continue
         
@@ -1156,7 +1621,7 @@ def enrich_emails():
 
 @app.route('/api/export', methods=['POST'])
 def export_csv():
-    """Export enriched data to CSV - excludes invalid emails"""
+    """Export enriched data to CSV - excludes invalid emails, includes phones"""
     data = request.json
     companies = data.get('companies', [])
     filename = data.get('filename', 'enriched_companies.csv')
@@ -1169,11 +1634,13 @@ def export_csv():
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         
-        # Build header with dynamic email columns
+        # Build header with phone and email columns
         header = [
             'Company Name', 'Company Number', 'Address Line 1', 'Address Line 2',
             'Town', 'County', 'Postcode', 'Status', 'SIC Code', 'SIC Description',
-            'Incorporation Date', 'Website', 'Website Source', 'Director 1', 'Director 2', 'Director 3'
+            'Incorporation Date', 'Website', 'Website Source', 
+            'Main Phone', 'Phone Source',  # Phone columns
+            'Director 1', 'Director 2', 'Director 3'
         ]
         for i in range(1, MAX_EMAILS + 1):
             header.extend([f'Email {i}', f'Email {i} Source', f'Email {i} Verified', f'Email {i} Score'])
@@ -1187,9 +1654,26 @@ def export_csv():
                 director_names.append('')
             
             emails = company.get('emails', [])
+            phones = company.get('phones', [])
             
-            # Filter out invalid emails - don't export them
-            valid_emails = [e for e in emails if e.get('verification_status', '').lower() != 'invalid']
+            # Get main phone
+            main_phone = ''
+            phone_source = ''
+            if phones and len(phones) > 0:
+                main_phone = phones[0].get('phone', '')
+                phone_source = phones[0].get('source', '')
+            
+            # Filter out invalid emails and deduplicate
+            seen_emails = set()
+            valid_emails = []
+            for e in emails:
+                email_addr = e.get('email', '').lower().strip()
+                if e.get('verification_status', '').lower() == 'invalid':
+                    continue  # Skip invalid
+                if email_addr in seen_emails:
+                    continue  # Skip duplicate
+                seen_emails.add(email_addr)
+                valid_emails.append(e)
             
             # Get email details with source, verification status, and score
             email_data = []
@@ -1206,7 +1690,7 @@ def export_csv():
             while len(email_data) < MAX_EMAILS:
                 email_data.append({'email': '', 'source': '', 'verified': '', 'score': ''})
             
-            # Build row
+            # Build row with phone included
             row = [
                 company.get('company_name', ''),
                 company.get('company_number', ''),
@@ -1221,6 +1705,8 @@ def export_csv():
                 company.get('incorporation_date', ''),
                 company.get('domain', ''),
                 company.get('domain_source', ''),
+                main_phone,
+                phone_source,
                 director_names[0],
                 director_names[1],
                 director_names[2]
@@ -1237,7 +1723,7 @@ def export_csv():
 
 @app.route('/api/export-clean', methods=['POST'])
 def export_clean_csv():
-    """Export clean CSV - one row per email, CRM-ready format"""
+    """Export clean CSV - one row per email, CRM-ready format with phone"""
     data = request.json
     companies = data.get('companies', [])
     filename = data.get('filename', 'clean_emails.csv')
@@ -1250,10 +1736,11 @@ def export_clean_csv():
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         
-        # Simple header - one row per email
+        # Simple header - one row per email, with main phone included
         writer.writerow([
             'Company Name', 'Company Number', 'First Name', 'Last Name', 
-            'Email', 'Email Source', 'Verified Status', 'Verification Score'
+            'Email', 'Email Source', 'Verified Status', 'Verification Score',
+            'Main Phone', 'Phone Source'  # Added phone columns
         ])
         
         for company in companies:
@@ -1261,6 +1748,17 @@ def export_clean_csv():
             company_number = company.get('company_number', '')
             directors = company.get('directors', [])
             emails = company.get('emails', [])
+            phones = company.get('phones', [])
+            
+            # Get main phone for this company
+            main_phone = ''
+            phone_source = ''
+            if phones and len(phones) > 0:
+                main_phone = phones[0].get('phone', '')
+                phone_source = phones[0].get('source', '')
+            
+            # Track seen emails to avoid duplicates
+            seen_emails = set()
             
             for email_data in emails:
                 # Skip invalid emails
@@ -1269,9 +1767,14 @@ def export_clean_csv():
                     skipped_invalid += 1
                     continue
                 
-                email = email_data.get('email', '')
+                email = email_data.get('email', '').lower().strip()
                 if not email:
                     continue
+                
+                # Skip duplicates
+                if email in seen_emails:
+                    continue
+                seen_emails.add(email)
                 
                 # Try to match email to a director
                 first_name = ''
@@ -1313,7 +1816,9 @@ def export_clean_csv():
                     email,
                     source,
                     verified,
-                    score
+                    score,
+                    main_phone,
+                    phone_source
                 ])
                 total_emails += 1
     
@@ -1327,32 +1832,77 @@ def export_clean_csv():
 
 @app.route('/api/sic-codes', methods=['GET'])
 def get_sic_codes():
-    """Return available SIC code filters"""
+    """Return available SIC code filters - favorites + all from database with descriptions"""
+    import json
+    
+    # Load SIC descriptions from JSON file
+    sic_descriptions = {}
+    try:
+        with open('sic_codes.json', 'r') as f:
+            sic_descriptions = json.load(f)
+    except Exception as e:
+        print(f"Error loading SIC descriptions: {e}")
+    
+    # Get all unique SIC codes from database with counts
+    all_sics = []
+    if USE_DATABASE:
+        try:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT DISTINCT sic_code_1 as sic, COUNT(*) as count 
+                    FROM companies 
+                    WHERE sic_code_1 IS NOT NULL AND sic_code_1 != ''
+                    AND company_status = 'Active'
+                    GROUP BY sic_code_1
+                    ORDER BY sic_code_1
+                ''')
+                for row in cursor.fetchall():
+                    code = row['sic']
+                    desc = sic_descriptions.get(code, 'Unknown')
+                    all_sics.append({
+                        'code': code, 
+                        'count': row['count'],
+                        'description': desc
+                    })
+        except Exception as e:
+            print(f"Error fetching SIC codes: {e}")
+    
+    # Favorites as separate items (not bundled)
+    favorites = [
+        {'id': 'all_target', 'name': '⭐ All My Target SIC Codes', 'codes': ['82990', '69201', '69203', '82110', '70229']},
+        {'id': '69201', 'name': '⭐ 69201 - Accounting & Auditing', 'codes': ['69201']},
+        {'id': '69203', 'name': '⭐ 69203 - Tax Consultancy', 'codes': ['69203']},
+        {'id': '70229', 'name': '⭐ 70229 - Management Consultancy', 'codes': ['70229']},
+        {'id': '82990', 'name': '⭐ 82990 - Business Support Services', 'codes': ['82990']},
+        {'id': '82110', 'name': '⭐ 82110 - Office Admin Services', 'codes': ['82110']},
+    ]
+    
     return jsonify({
-        'categories': {
-            'accountants': {
-                'name': 'Accountants',
-                'codes': ['69201', '69203'],
-                'description': 'Accounting, auditing & tax consultancy'
-            },
-            'management_consultancy': {
-                'name': 'Management Consultancy',
-                'codes': ['70229'],
-                'description': 'Management consultancy activities'
-            },
-            'business_support': {
-                'name': 'Business Support',
-                'codes': ['82990', '82110'],
-                'description': 'Business support & admin services'
-            },
-            'all_target': {
-                'name': 'All Target SIC Codes',
-                'codes': ['82990', '69201', '69203', '82110', '70229'],
-                'description': 'All accountant-related SIC codes'
-            }
-        },
-        'individual': SIC_DESCRIPTIONS
+        'favorites': favorites,
+        'all_sics': all_sics,
+        'total_sic_codes': len(all_sics),
+        'descriptions': sic_descriptions
     })
+
+
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """Return database statistics"""
+    if USE_DATABASE:
+        try:
+            stats = get_db_stats()
+            return jsonify({
+                'source': 'database',
+                'stats': stats
+            })
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    else:
+        return jsonify({
+            'source': 'csv',
+            'stats': {'message': 'Database not enabled'}
+        })
 
 
 def verify_email_hunter(email):
@@ -1438,6 +1988,13 @@ def verify_emails():
                 result['company_name'] = email_data.get('company_name', '')
                 result['first_name'] = email_data.get('first_name', '')
                 result['last_name'] = email_data.get('last_name', '')
+            
+            # Save verification to database
+            if USE_DATABASE:
+                try:
+                    update_email_verification(email, result)
+                except Exception as e:
+                    print(f"Error saving verification for {email}: {e}")
             
             results.append(result)
         
