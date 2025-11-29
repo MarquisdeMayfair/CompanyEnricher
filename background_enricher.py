@@ -2,7 +2,9 @@
 """
 Background Enricher for Favorite Companies
 ==========================================
-Automatically enriches companies with favorite SIC codes.
+Automatically enriches companies with favorite SIC codes in phases.
+
+Developed on: Gaming PC (mrdea)
 
 Process:
 1. Directors (Companies House API) 
@@ -10,8 +12,18 @@ Process:
 3. Emails & Phones (free web scraping)
 4. Email enrichment (Hunter.io - paid, only if needed)
 
+SIC Code Phases (in order):
+  Phase 1: Accountants (69201, 69203) - PRIORITY
+  Phase 2: Office Admin (82110)
+  Phase 3: Management Consultancy (70229)
+  Phase 4: Business Support (82990)
+
+Auto-stops and uploads to Google Drive when:
+  - A phase completes
+  - Hunter.io credits are exhausted
+
 Usage:
-    Start:  cd "/Users/nik/Downloads/DATA LISTS" && source venv/bin/activate && python background_enricher.py
+    Start:  python background_enricher.py
     Stop:   Ctrl+C
     
     With options:
@@ -42,8 +54,20 @@ DB_PATH = os.path.join(os.path.dirname(__file__), 'companies.db')
 COMPANIES_HOUSE_API_KEY = os.getenv('COMPANIES_HOUSE_API_KEY')
 HUNTER_API_KEY = os.getenv('HUNTER_API_KEY')
 
-# Favorite SIC codes - Accountants & Tax only
-FAVORITE_SICS = ['69201', '69203']  # 69201=Accounting, 69203=Tax Consultancy
+# SIC Code Phases - processed in order
+# Phase 1: Accountants (PRIORITY)
+# Phase 2: Office Admin
+# Phase 3: Management Consultancy  
+# Phase 4: Business Support
+SIC_PHASES = [
+    {'name': 'Accountants', 'codes': ['69201', '69203']},
+    {'name': 'Office Admin', 'codes': ['82110']},
+    {'name': 'Management Consultancy', 'codes': ['70229']},
+    {'name': 'Business Support', 'codes': ['82990']},
+]
+
+# Current phase SIC codes (will be updated as phases complete)
+FAVORITE_SICS = ['69201', '69203']  # Start with Phase 1
 
 # Rate limiting (seconds between requests)
 CH_DELAY = 1.0      # Companies House: 1 req/sec
@@ -98,6 +122,8 @@ running = True
 dry_run = False
 use_hunter = True
 max_limit = None
+hunter_credits_exhausted = False
+current_phase_index = 0
 
 stats = {
     'processed': 0,
@@ -108,7 +134,8 @@ stats = {
     'hunter_credits_used': 0,
     'errors': 0,
     'skipped': 0,
-    'start_time': None
+    'start_time': None,
+    'phase_name': 'Accountants'
 }
 
 
@@ -126,11 +153,23 @@ def upload_to_gdrive():
     
     print("\n☁️  Uploading database to Google Drive...")
     
+    # Rclone path - check custom path first, then system PATH
+    rclone_paths = [
+        r'C:\Users\mrdea\rclone-v1.72.0-windows-amd64\rclone-v1.72.0-windows-amd64\rclone.exe',
+        'rclone'  # fallback to system PATH
+    ]
+    
+    rclone_cmd = None
+    for path in rclone_paths:
+        if os.path.exists(path) or shutil.which(path):
+            rclone_cmd = path
+            break
+    
     # Method 1: Try rclone (if installed)
-    if shutil.which('rclone'):
+    if rclone_cmd:
         try:
             result = subprocess.run([
-                'rclone', 'copy', 
+                rclone_cmd, 'copy', 
                 DB_PATH, 
                 'gdrive:CompanyEnricher/',
                 '--progress'
@@ -367,9 +406,11 @@ def scrape_emails_and_phones(domain, company_number, company_id):
 
 
 def hunter_email_search(domain, company_number, company_id):
-    """Use Hunter.io domain search for emails. Returns (count, email_list)"""
+    """Use Hunter.io domain search for emails. Returns (count, email_list, credits_exhausted)"""
+    global hunter_credits_exhausted
+    
     if not HUNTER_API_KEY or not domain:
-        return 0, []
+        return 0, [], False
     
     try:
         response = requests.get(
@@ -386,7 +427,7 @@ def hunter_email_search(domain, company_number, company_id):
             email_list = data.get('data', {}).get('emails', [])
             
             if not email_list:
-                return 0, []
+                return 0, [], False
             
             with get_db() as conn:
                 cursor = conn.cursor()
@@ -412,18 +453,25 @@ def hunter_email_search(domain, company_number, company_id):
                 
                 conn.commit()
             
-            return emails_found, found_emails
+            return emails_found, found_emails, False
         
         elif response.status_code == 429:
             print(f"         ⚠️ Hunter rate limit! Waiting 60s...")
             time.sleep(60)
-            return 0, []
+            return 0, [], False
+        
+        elif response.status_code == 402:
+            # Credits exhausted
+            print(f"\n         🚫 HUNTER CREDITS EXHAUSTED!")
+            hunter_credits_exhausted = True
+            return 0, [], True
+        
         else:
-            return 0, []
+            return 0, [], False
     
     except Exception as e:
         print(f"         ⚠️ Hunter error: {e}")
-        return 0, []
+        return 0, [], False
 
 
 def update_company_status(company_id, has_directors, has_website, has_emails, has_phones):
@@ -486,77 +534,15 @@ def print_stats(remaining=None):
     print(f"{'─'*50}")
 
 
-def run_enrichment():
-    """Main enrichment loop"""
-    global running, max_limit
+def run_phase(phase_name, sic_codes, to_process):
+    """Run enrichment for a single phase. Returns True if completed, False if interrupted."""
+    global running, max_limit, hunter_credits_exhausted, FAVORITE_SICS
     
-    stats['start_time'] = time.time()
+    FAVORITE_SICS = sic_codes  # Update global for get_pending_companies
+    stats['phase_name'] = phase_name
+    total_to_process = to_process
     
-    # Get stats before starting
-    with get_db() as conn:
-        cursor = conn.cursor()
-        placeholders = ','.join(['?' for _ in FAVORITE_SICS])
-        
-        # Total in categories
-        cursor.execute(f'''
-            SELECT COUNT(*) FROM companies 
-            WHERE company_status = 'Active' AND sic_code_1 IN ({placeholders})
-        ''', tuple(FAVORITE_SICS))
-        total_in_categories = cursor.fetchone()[0]
-        
-        # Breakdown by status
-        cursor.execute(f'''
-            SELECT enrichment_status, COUNT(*) FROM companies 
-            WHERE company_status = 'Active' AND sic_code_1 IN ({placeholders})
-            GROUP BY enrichment_status
-        ''', tuple(FAVORITE_SICS))
-        status_breakdown = dict(cursor.fetchall())
-        
-        # To process
-        cursor.execute(f'''
-            SELECT COUNT(*) FROM companies 
-            WHERE company_status = 'Active' AND sic_code_1 IN ({placeholders})
-            AND (enrichment_status = 'not_attempted' OR enrichment_status IS NULL)
-        ''', tuple(FAVORITE_SICS))
-        to_process = cursor.fetchone()[0]
-    
-    # Estimate time (approx 1000/hour with API delays)
-    estimated_hours = to_process / 1000
-    
-    print("\n" + "="*60)
-    print("🚀 BACKGROUND ENRICHER STARTED")
-    print("="*60)
-    print(f"   Mode:        {'DRY RUN (no changes)' if dry_run else 'LIVE'}")
-    print(f"   Hunter.io:   {'ENABLED' if use_hunter and HUNTER_API_KEY else 'DISABLED'}")
-    print(f"   Limit:       {max_limit if max_limit else 'Unlimited'}")
-    print(f"   SIC Codes:   {', '.join(FAVORITE_SICS)}")
-    print(f"   Database:    {DB_PATH}")
-    print(f"   CH API:      {'✅ Configured' if COMPANIES_HOUSE_API_KEY else '❌ Missing'}")
-    print(f"   Hunter API:  {'✅ Configured' if HUNTER_API_KEY else '❌ Missing'}")
-    print("="*60)
-    print(f"   📊 CATEGORY TOTALS (Active companies)")
-    print(f"   Total in SIC categories:    {total_in_categories:,}")
-    print(f"   ├─ Success:                 {status_breakdown.get('success', 0):,}")
-    print(f"   ├─ Partial:                 {status_breakdown.get('partial', 0):,}")
-    print(f"   ├─ Failed:                  {status_breakdown.get('failed', 0):,}")
-    print(f"   └─ Not attempted:           {to_process:,}")
-    print("="*60)
-    print(f"   ⏱️  ESTIMATED TIME")
-    print(f"   To process:                 {to_process:,} companies")
-    print(f"   Rate:                       ~1,000/hour")
-    if estimated_hours < 1:
-        print(f"   Estimated completion:       ~{int(estimated_hours * 60)} minutes")
-    elif estimated_hours < 24:
-        print(f"   Estimated completion:       ~{estimated_hours:.1f} hours")
-    else:
-        print(f"   Estimated completion:       ~{estimated_hours/24:.1f} days")
-    print("="*60)
-    print("   Press Ctrl+C to stop gracefully")
-    print("="*60 + "\n")
-    
-    total_to_process = 0
-    
-    while running:
+    while running and not hunter_credits_exhausted:
         # Check if we've hit the limit
         if max_limit and stats['processed'] >= max_limit:
             print(f"\n✅ Reached limit of {max_limit} companies")
@@ -671,7 +657,7 @@ def run_enrichment():
                     print(f"           ... and {len(scraped_emails_list) - 3} more")
             
             # 4. Hunter Email Enrichment - check if we have PERSONAL emails
-            if website and use_hunter and HUNTER_API_KEY:
+            if website and use_hunter and HUNTER_API_KEY and not hunter_credits_exhausted:
                 with get_db() as conn:
                     cursor = conn.cursor()
                     cursor.execute('SELECT email FROM emails WHERE company_number = ?', 
@@ -686,8 +672,11 @@ def run_enrichment():
                     print(f"         ○ Hunter: skipped ({personal_count} personal emails found)")
                 elif len(existing_emails) >= 2 and personal_count == 0:
                     print(f"         🔍 Trying Hunter (have {generic_count} generic emails, need personal)...")
-                    hunter_found, hunter_emails = hunter_email_search(website, company_number, company_id)
-                    if hunter_found > 0:
+                    hunter_found, hunter_emails, credits_out = hunter_email_search(website, company_number, company_id)
+                    if credits_out:
+                        print(f"         🚫 Hunter credits exhausted - stopping to upload...")
+                        running = False
+                    elif hunter_found > 0:
                         has_emails = True
                         stats['emails_found'] += hunter_found
                         stats['hunter_credits_used'] += 1
@@ -699,8 +688,11 @@ def run_enrichment():
                     time.sleep(HUNTER_DELAY)
                 elif len(existing_emails) < 2:
                     print(f"         🔍 Trying Hunter for {website}...")
-                    hunter_found, hunter_emails = hunter_email_search(website, company_number, company_id)
-                    if hunter_found > 0:
+                    hunter_found, hunter_emails, credits_out = hunter_email_search(website, company_number, company_id)
+                    if credits_out:
+                        print(f"         🚫 Hunter credits exhausted - stopping to upload...")
+                        running = False
+                    elif hunter_found > 0:
                         has_emails = True
                         stats['emails_found'] += hunter_found
                         stats['hunter_credits_used'] += 1
@@ -725,15 +717,130 @@ def run_enrichment():
                 print_stats(remaining)
         
         # Small pause between batches
-        if running:
+        if running and not hunter_credits_exhausted:
             time.sleep(0.5)
     
-    print_stats(to_process - stats['processed'])
-    print("\n🏁 Enrichment process finished!\n")
+    # Return whether phase completed successfully
+    return not hunter_credits_exhausted and running
+
+
+def run_enrichment():
+    """Main enrichment loop - processes all SIC phases in order"""
+    global running, hunter_credits_exhausted, current_phase_index, FAVORITE_SICS
     
-    # Upload to Google Drive if configured
-    if os.getenv('GDRIVE_UPLOAD') == 'true':
-        upload_to_gdrive()
+    stats['start_time'] = time.time()
+    
+    print("\n" + "="*60)
+    print("🚀 BACKGROUND ENRICHER - MULTI-PHASE MODE")
+    print("="*60)
+    print(f"   Mode:        {'DRY RUN (no changes)' if dry_run else 'LIVE'}")
+    print(f"   Hunter.io:   {'ENABLED' if use_hunter and HUNTER_API_KEY else 'DISABLED'}")
+    print(f"   Limit:       {max_limit if max_limit else 'Unlimited'}")
+    print(f"   Database:    {DB_PATH}")
+    print(f"   CH API:      {'✅ Configured' if COMPANIES_HOUSE_API_KEY else '❌ Missing'}")
+    print(f"   Hunter API:  {'✅ Configured' if HUNTER_API_KEY else '❌ Missing'}")
+    print("="*60)
+    print("   📋 ENRICHMENT PHASES (in order):")
+    for i, phase in enumerate(SIC_PHASES):
+        print(f"      Phase {i+1}: {phase['name']} ({', '.join(phase['codes'])})")
+    print("="*60)
+    print("   Press Ctrl+C to stop gracefully")
+    print("="*60 + "\n")
+    
+    # Process each phase
+    for phase_index, phase in enumerate(SIC_PHASES):
+        if not running:
+            break
+        if hunter_credits_exhausted:
+            print(f"\n🚫 Hunter credits exhausted - stopping before Phase {phase_index + 1}")
+            break
+        
+        current_phase_index = phase_index
+        phase_name = phase['name']
+        sic_codes = phase['codes']
+        FAVORITE_SICS = sic_codes
+        
+        # Get phase stats
+        with get_db() as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join(['?' for _ in sic_codes])
+            
+            cursor.execute(f'''
+                SELECT COUNT(*) FROM companies 
+                WHERE company_status = 'Active' AND sic_code_1 IN ({placeholders})
+            ''', tuple(sic_codes))
+            total_in_phase = cursor.fetchone()[0]
+            
+            cursor.execute(f'''
+                SELECT enrichment_status, COUNT(*) FROM companies 
+                WHERE company_status = 'Active' AND sic_code_1 IN ({placeholders})
+                GROUP BY enrichment_status
+            ''', tuple(sic_codes))
+            status_breakdown = dict(cursor.fetchall())
+            
+            cursor.execute(f'''
+                SELECT COUNT(*) FROM companies 
+                WHERE company_status = 'Active' AND sic_code_1 IN ({placeholders})
+                AND (enrichment_status = 'not_attempted' OR enrichment_status IS NULL)
+            ''', tuple(sic_codes))
+            to_process = cursor.fetchone()[0]
+        
+        # Skip if nothing to process
+        if to_process == 0:
+            print(f"\n✅ Phase {phase_index + 1}: {phase_name} - Already complete!")
+            continue
+        
+        # Print phase header
+        estimated_hours = to_process / 1000
+        print("\n" + "="*60)
+        print(f"📦 PHASE {phase_index + 1}: {phase_name.upper()}")
+        print("="*60)
+        print(f"   SIC Codes:   {', '.join(sic_codes)}")
+        print(f"   Total in phase:             {total_in_phase:,}")
+        print(f"   ├─ Success:                 {status_breakdown.get('success', 0):,}")
+        print(f"   ├─ Partial:                 {status_breakdown.get('partial', 0):,}")
+        print(f"   ├─ Failed:                  {status_breakdown.get('failed', 0):,}")
+        print(f"   └─ To process:              {to_process:,}")
+        if estimated_hours < 1:
+            print(f"   Estimated time:             ~{int(estimated_hours * 60)} minutes")
+        elif estimated_hours < 24:
+            print(f"   Estimated time:             ~{estimated_hours:.1f} hours")
+        else:
+            print(f"   Estimated time:             ~{estimated_hours/24:.1f} days")
+        print("="*60 + "\n")
+        
+        # Run phase
+        phase_completed = run_phase(phase_name, sic_codes, to_process)
+        
+        # Print phase stats
+        print_stats(to_process - stats['processed'])
+        
+        if phase_completed:
+            print(f"\n✅ Phase {phase_index + 1}: {phase_name} COMPLETE!")
+        else:
+            if hunter_credits_exhausted:
+                print(f"\n🚫 Phase {phase_index + 1}: {phase_name} - Stopped (Hunter credits exhausted)")
+            else:
+                print(f"\n⏹️ Phase {phase_index + 1}: {phase_name} - Stopped by user")
+        
+        # Upload after each phase completion or credit exhaustion
+        if os.getenv('GDRIVE_UPLOAD') == 'true':
+            print(f"\n☁️  Uploading after Phase {phase_index + 1}...")
+            upload_to_gdrive()
+        
+        # Reset stats for next phase
+        if phase_completed and phase_index < len(SIC_PHASES) - 1:
+            stats['processed'] = 0
+            stats['directors_found'] = 0
+            stats['websites_found'] = 0
+            stats['emails_found'] = 0
+            stats['phones_found'] = 0
+            stats['hunter_credits_used'] = 0
+            stats['errors'] = 0
+    
+    print("\n" + "="*60)
+    print("🏁 ALL ENRICHMENT PHASES FINISHED!")
+    print("="*60 + "\n")
 
 
 def main():
