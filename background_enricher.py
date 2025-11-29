@@ -119,6 +119,46 @@ def signal_handler(sig, frame):
     running = False
 
 
+def upload_to_gdrive():
+    """Upload database to Google Drive using rclone or simple HTTP"""
+    import subprocess
+    import shutil
+    
+    print("\n☁️  Uploading database to Google Drive...")
+    
+    # Method 1: Try rclone (if installed)
+    if shutil.which('rclone'):
+        try:
+            result = subprocess.run([
+                'rclone', 'copy', 
+                DB_PATH, 
+                'gdrive:CompanyEnricher/',
+                '--progress'
+            ], capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                print("✅ Database uploaded to Google Drive: CompanyEnricher/companies.db")
+                return True
+            else:
+                print(f"⚠️ rclone error: {result.stderr}")
+        except Exception as e:
+            print(f"⚠️ rclone failed: {e}")
+    
+    # Method 2: Create timestamped copy for manual upload
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_name = f"companies_enriched_{timestamp}.db"
+    backup_path = os.path.join(os.path.dirname(DB_PATH), backup_name)
+    
+    try:
+        shutil.copy2(DB_PATH, backup_path)
+        print(f"📁 Database backed up to: {backup_name}")
+        print(f"   Upload this file manually to Google Drive")
+        return True
+    except Exception as e:
+        print(f"❌ Backup failed: {e}")
+        return False
+
+
 def get_db():
     """Get database connection"""
     conn = sqlite3.connect(DB_PATH)
@@ -690,6 +730,10 @@ def run_enrichment():
     
     print_stats(to_process - stats['processed'])
     print("\n🏁 Enrichment process finished!\n")
+    
+    # Upload to Google Drive if configured
+    if os.getenv('GDRIVE_UPLOAD') == 'true':
+        upload_to_gdrive()
 
 
 def main():
