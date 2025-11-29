@@ -1,6 +1,7 @@
 import os
 import csv
 import requests
+from datetime import datetime
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -1736,11 +1737,13 @@ def export_clean_csv():
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         
-        # Simple header - one row per email, with main phone included
+        # Header - one row per email with director name parsed
         writer.writerow([
-            'Company Name', 'Company Number', 'First Name', 'Last Name', 
+            'Company Name', 'Company Number', 
+            'Director Name', 'Director First Name', 'Director Last Name',
+            'Email First Name', 'Email Last Name', 
             'Email', 'Email Source', 'Verified Status', 'Verification Score',
-            'Main Phone', 'Phone Source'  # Added phone columns
+            'Main Phone', 'Phone Source'
         ])
         
         for company in companies:
@@ -1757,13 +1760,21 @@ def export_clean_csv():
                 main_phone = phones[0].get('phone', '')
                 phone_source = phones[0].get('source', '')
             
+            # Get first director and parse name
+            director_name = ''
+            dir_first = ''
+            dir_last = ''
+            if directors and len(directors) > 0:
+                director_name = directors[0].get('name', '')
+                dir_first, dir_last = parse_director_name(director_name)
+            
             # Track seen emails to avoid duplicates
             seen_emails = set()
             
             for email_data in emails:
                 # Skip invalid emails
                 verification_status = email_data.get('verification_status', '')
-                if verification_status.lower() == 'invalid':
+                if verification_status and verification_status.lower() == 'invalid':
                     skipped_invalid += 1
                     continue
                 
@@ -1776,33 +1787,9 @@ def export_clean_csv():
                     continue
                 seen_emails.add(email)
                 
-                # Try to match email to a director
-                first_name = ''
-                last_name = ''
-                
-                # Check if email has associated name
-                if email_data.get('first_name'):
-                    first_name = email_data.get('first_name', '')
-                    last_name = email_data.get('last_name', '')
-                else:
-                    # Try to match email to director by email pattern
-                    email_lower = email.lower()
-                    for director in directors:
-                        name = director.get('name', '')
-                        if ',' in name:
-                            parts = name.split(',')
-                            d_last = parts[0].strip()
-                            d_first = parts[1].strip().split()[0] if len(parts) > 1 else ''
-                        else:
-                            parts = name.split()
-                            d_first = parts[0] if parts else ''
-                            d_last = parts[-1] if len(parts) > 1 else ''
-                        
-                        # Check if director name appears in email
-                        if d_first.lower() in email_lower or d_last.lower() in email_lower:
-                            first_name = d_first
-                            last_name = d_last
-                            break
+                # Get email-associated first/last name
+                email_first = email_data.get('first_name', '') or ''
+                email_last = email_data.get('last_name', '') or ''
                 
                 source = email_data.get('source_label', email_data.get('source', ''))
                 verified = verification_status if email_data.get('verified') else 'Not Verified'
@@ -1811,8 +1798,11 @@ def export_clean_csv():
                 writer.writerow([
                     company_name,
                     company_number,
-                    first_name,
-                    last_name,
+                    director_name,
+                    dir_first,
+                    dir_last,
+                    email_first,
+                    email_last,
                     email,
                     source,
                     verified,
@@ -1886,9 +1876,32 @@ def get_sic_codes():
     })
 
 
+def parse_director_name(full_name):
+    """Parse 'SURNAME, Firstname Middlename' into (first_name, last_name)"""
+    if not full_name:
+        return '', ''
+    
+    # Format: "SURNAME, Firstname Middlename" or just "Firstname Lastname"
+    if ',' in full_name:
+        parts = full_name.split(',', 1)
+        surname = parts[0].strip().title()  # SURNAME -> Surname
+        firstnames = parts[1].strip() if len(parts) > 1 else ''
+        # Take only the first name (not middle names)
+        first_name = firstnames.split()[0].title() if firstnames else ''
+        return first_name, surname
+    else:
+        # No comma - assume "Firstname Lastname"
+        parts = full_name.strip().split()
+        if len(parts) >= 2:
+            return parts[0].title(), parts[-1].title()
+        elif len(parts) == 1:
+            return '', parts[0].title()
+        return '', ''
+
+
 @app.route('/api/export-master', methods=['GET'])
 def export_master_csv():
-    """Export ALL enriched companies with emails from database - Master Export"""
+    """Export ALL enriched companies with emails - ONE ROW PER EMAIL (CRM-ready)"""
     from database import get_db
     
     filename = f'master_enriched_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
@@ -1898,96 +1911,99 @@ def export_master_csv():
         with get_db() as conn:
             cursor = conn.cursor()
             
-            # Get all companies that have at least one email
-            cursor.execute('''
-                SELECT DISTINCT c.id, c.company_name, c.company_number, 
-                       c.address_line1, c.post_town, c.postcode,
-                       c.sic_code_1, c.company_status, c.incorporation_date,
-                       c.website, c.main_phone, c.enrichment_status
-                FROM companies c
-                INNER JOIN emails e ON c.company_number = e.company_number
-                WHERE c.company_status = 'Active'
-                ORDER BY c.company_name
-            ''')
-            companies = cursor.fetchall()
-            
-            total_companies = 0
-            total_emails = 0
+            total_rows = 0
+            total_companies = set()
+            skipped_invalid = 0
             
             with open(output_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 
-                # Header
+                # Header - ONE ROW PER EMAIL format
                 writer.writerow([
-                    'Company Name', 'Company Number', 'Address', 'Post Town', 'Postcode',
-                    'SIC Code', 'Status', 'Incorporation Date', 'Website', 'Main Phone',
-                    'Director 1', 'Director 2',
-                    'Email 1', 'Email 1 Source', 'Email 1 Verified',
-                    'Email 2', 'Email 2 Source', 'Email 2 Verified',
-                    'Email 3', 'Email 3 Source', 'Email 3 Verified',
-                    'Enrichment Status'
+                    'Company Name', 'Company Number', 
+                    'Address', 'Post Town', 'Postcode',
+                    'SIC Code', 'Website', 'Phone',
+                    'Director Name', 'Director First Name', 'Director Last Name',
+                    'Email First Name', 'Email Last Name', 
+                    'Email', 'Email Source', 'Verified Status', 'Verification Score'
                 ])
                 
-                for company in companies:
-                    company_id = company['id']
-                    company_number = company['company_number']
+                # Get all emails with company data
+                cursor.execute('''
+                    SELECT 
+                        c.company_name, c.company_number,
+                        c.address_line1, c.post_town, c.postcode,
+                        c.sic_code_1, c.website,
+                        e.email, e.source_label, e.verification_status, e.verification_score,
+                        e.first_name, e.last_name
+                    FROM emails e
+                    INNER JOIN companies c ON e.company_number = c.company_number
+                    WHERE c.company_status = 'Active'
+                    AND (e.verification_status IS NULL OR e.verification_status != 'invalid')
+                    ORDER BY c.company_name, e.email
+                ''')
+                
+                # Cache for directors and phones to avoid repeated queries
+                director_cache = {}
+                phone_cache = {}
+                
+                for row in cursor.fetchall():
+                    company_number = row['company_number']
                     
-                    # Get directors
-                    cursor.execute('''
-                        SELECT name FROM directors 
-                        WHERE company_number = ? AND resigned_on IS NULL
-                        LIMIT 2
-                    ''', (company_number,))
-                    directors = [d['name'] for d in cursor.fetchall()]
+                    # Get director (cached)
+                    if company_number not in director_cache:
+                        cursor.execute('''
+                            SELECT name FROM directors 
+                            WHERE company_number = ? AND resigned_on IS NULL
+                            ORDER BY appointed_on DESC LIMIT 1
+                        ''', (company_number,))
+                        director_row = cursor.fetchone()
+                        director_cache[company_number] = director_row['name'] if director_row else ''
                     
-                    # Get emails
-                    cursor.execute('''
-                        SELECT email, source_label, verification_status 
-                        FROM emails WHERE company_number = ?
-                        ORDER BY CASE WHEN verification_status = 'valid' THEN 0 ELSE 1 END
-                        LIMIT 3
-                    ''', (company_number,))
-                    emails = cursor.fetchall()
+                    director_name = director_cache[company_number]
+                    dir_first, dir_last = parse_director_name(director_name)
                     
-                    # Build row
-                    row = [
-                        company['company_name'],
+                    # Get phone (cached)
+                    if company_number not in phone_cache:
+                        cursor.execute('''
+                            SELECT phone FROM phones 
+                            WHERE company_number = ? LIMIT 1
+                        ''', (company_number,))
+                        phone_row = cursor.fetchone()
+                        phone_cache[company_number] = phone_row['phone'] if phone_row else ''
+                    
+                    phone = phone_cache[company_number]
+                    
+                    writer.writerow([
+                        row['company_name'],
                         company_number,
-                        company['address_line1'] or '',
-                        company['post_town'] or '',
-                        company['postcode'] or '',
-                        company['sic_code_1'] or '',
-                        company['company_status'] or '',
-                        company['incorporation_date'] or '',
-                        company['website'] or '',
-                        company['main_phone'] or '',
-                        directors[0] if len(directors) > 0 else '',
-                        directors[1] if len(directors) > 1 else '',
-                    ]
+                        row['address_line1'] or '',
+                        row['post_town'] or '',
+                        row['postcode'] or '',
+                        row['sic_code_1'] or '',
+                        row['website'] or '',
+                        phone,
+                        director_name,
+                        dir_first,
+                        dir_last,
+                        row['first_name'] or '',
+                        row['last_name'] or '',
+                        row['email'],
+                        row['source_label'] or '',
+                        row['verification_status'] or '',
+                        row['verification_score'] or ''
+                    ])
                     
-                    # Add up to 3 emails
-                    for i in range(3):
-                        if i < len(emails):
-                            row.extend([
-                                emails[i]['email'],
-                                emails[i]['source_label'] or '',
-                                emails[i]['verification_status'] or ''
-                            ])
-                        else:
-                            row.extend(['', '', ''])
-                    
-                    row.append(company['enrichment_status'] or '')
-                    writer.writerow(row)
-                    
-                    total_companies += 1
-                    total_emails += len(emails)
+                    total_rows += 1
+                    total_companies.add(company_number)
             
             return jsonify({
                 'success': True,
                 'filename': filename,
                 'path': output_path,
-                'total_companies': total_companies,
-                'total_emails': total_emails
+                'total_rows': total_rows,
+                'total_companies': len(total_companies),
+                'skipped_invalid': skipped_invalid
             })
     
     except Exception as e:
@@ -2118,5 +2134,6 @@ def verify_emails():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # Port 5050 to avoid conflict with macOS AirPlay on 5000
+    app.run(debug=True, port=5050, host='0.0.0.0')
 

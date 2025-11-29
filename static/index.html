@@ -882,7 +882,6 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/>
                     </svg>
                     📥 Export Master (All Enriched)
-                    Export Clean Emails
                 </button>
             </div>
             
@@ -2046,7 +2045,7 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    showToast(`✅ Master export complete: ${data.total_companies.toLocaleString()} companies, ${data.total_emails.toLocaleString()} emails → ${data.filename}`, 'success');
+                    showToast(`✅ Master export: ${data.total_rows.toLocaleString()} email rows from ${data.total_companies.toLocaleString()} companies → ${data.filename}`, 'success');
                 } else {
                     showToast('Export failed: ' + data.error, 'error');
                 }

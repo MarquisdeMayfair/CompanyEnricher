@@ -42,8 +42,8 @@ DB_PATH = os.path.join(os.path.dirname(__file__), 'companies.db')
 COMPANIES_HOUSE_API_KEY = os.getenv('COMPANIES_HOUSE_API_KEY')
 HUNTER_API_KEY = os.getenv('HUNTER_API_KEY')
 
-# Favorite SIC codes
-FAVORITE_SICS = ['82990', '69201', '69203', '82110', '70229']
+# Favorite SIC codes - Accountants & Tax only
+FAVORITE_SICS = ['69201', '69203']  # 69201=Accounting, 69203=Tax Consultancy
 
 # Rate limiting (seconds between requests)
 CH_DELAY = 1.0      # Companies House: 1 req/sec
@@ -55,6 +55,43 @@ STATUS_NOT_ATTEMPTED = 'not_attempted'
 STATUS_PARTIAL = 'partial'
 STATUS_SUCCESS = 'success'
 STATUS_FAILED = 'failed'
+
+# Generic email prefixes - NOT personal emails, should still try Hunter
+GENERIC_EMAIL_PREFIXES = [
+    'info', 'hello', 'contact', 'enquiries', 'enquiry', 'admin', 'office',
+    'sales', 'support', 'help', 'mail', 'email', 'general', 'reception',
+    'accounts', 'billing', 'finance', 'hr', 'jobs', 'careers', 'recruitment',
+    'marketing', 'press', 'media', 'news', 'team', 'staff', 'company',
+    'business', 'service', 'services', 'customerservice', 'customerservices',
+    'helpdesk', 'tech', 'technical', 'it', 'webmaster', 'postmaster',
+    'noreply', 'no-reply', 'donotreply', 'auto', 'mailer', 'newsletter',
+    'subscribe', 'unsubscribe', 'feedback', 'suggestions', 'complaints',
+    'orders', 'order', 'booking', 'bookings', 'reservations', 'enquire',
+    'query', 'queries', 'request', 'requests', 'inbox', 'main', 'central',
+    'hq', 'headquarters', 'head', 'uk', 'london', 'england', 'britain',
+    'privacy', 'legal', 'compliance', 'gdpr', 'data', 'security',
+    'apply', 'applications', 'vacancies', 'work', 'employment',
+]
+
+def is_personal_email(email):
+    """Check if email appears to be a personal email (not generic)"""
+    if not email:
+        return False
+    
+    prefix = email.split('@')[0].lower().strip()
+    
+    # Check against generic prefixes
+    for generic in GENERIC_EMAIL_PREFIXES:
+        if prefix == generic or prefix.startswith(generic + '.') or prefix.endswith('.' + generic):
+            return False
+    
+    # If it contains a dot (like john.smith@) it's likely personal
+    if '.' in prefix and len(prefix) > 3:
+        return True
+    
+    # If it's short and not in generic list, might be initials (jsmith, js)
+    # Be conservative - only count as personal if it looks like a name
+    return False
 
 # State
 running = True
@@ -90,22 +127,21 @@ def get_db():
 
 
 def get_pending_companies(limit=100):
-    """Get companies that need enrichment"""
+    """Get companies that need enrichment - only not_attempted status"""
     with get_db() as conn:
         cursor = conn.cursor()
         
-        # Get companies with favorite SICs that haven't been fully enriched
+        # Get companies with favorite SICs that haven't been attempted yet
         placeholders = ','.join(['?' for _ in FAVORITE_SICS])
         cursor.execute(f'''
             SELECT c.id, c.company_number, c.company_name, c.sic_code_1,
                    c.directors_fetched, c.website_fetched, c.emails_fetched, c.phones_fetched,
-                   c.website
+                   c.website, c.enrichment_status
             FROM companies c
             WHERE c.company_status = 'Active'
             AND c.sic_code_1 IN ({placeholders})
-            AND (c.directors_fetched = 0 OR c.website_fetched = 0 
-                 OR c.emails_fetched = 0 OR c.phones_fetched = 0)
-            ORDER BY c.directors_fetched ASC, c.website_fetched ASC
+            AND (c.enrichment_status = 'not_attempted' OR c.enrichment_status IS NULL)
+            ORDER BY c.company_name ASC
             LIMIT ?
         ''', (*FAVORITE_SICS, limit))
         
@@ -208,15 +244,16 @@ def find_website(company_name, company_number, company_id):
 
 
 def scrape_emails_and_phones(domain, company_number, company_id):
-    """Scrape website for emails and phones"""
+    """Scrape website for emails and phones. Returns (email_count, phone_count, email_list)"""
     from bs4 import BeautifulSoup
     import re
     
     if not domain:
-        return 0, 0
+        return 0, 0, []
     
     emails_found = 0
     phones_found = 0
+    all_emails = set()
     
     # Pages to check
     pages = ['', '/contact', '/about', '/contact-us', '/about-us']
@@ -238,8 +275,10 @@ def scrape_emails_and_phones(domain, company_number, company_id):
             emails = set(re.findall(email_pattern, text))
             
             # Filter out common junk
-            emails = [e for e in emails if not any(x in e.lower() for x in 
-                ['example', 'test', 'sample', 'wixpress', 'sentry'])]
+            emails = [e.lower().strip() for e in emails if not any(x in e.lower() for x in 
+                ['example', 'test', 'sample', 'wixpress', 'sentry', 'cloudflare', 'w3.org'])]
+            
+            all_emails.update(emails)
             
             # Extract UK phone numbers
             phone_pattern = r'(?:(?:\+44|0044|0)\s?[1-9]\d{1,4}[\s.-]?\d{3,4}[\s.-]?\d{3,4})'
@@ -249,8 +288,7 @@ def scrape_emails_and_phones(domain, company_number, company_id):
             with get_db() as conn:
                 cursor = conn.cursor()
                 
-                for email in emails[:5]:  # Limit to 5 emails
-                    email = email.lower().strip()
+                for email in list(all_emails)[:5]:  # Limit to 5 emails
                     cursor.execute('''
                         INSERT OR IGNORE INTO emails 
                         (company_id, company_number, email, source, source_label)
@@ -285,13 +323,13 @@ def scrape_emails_and_phones(domain, company_number, company_id):
         ''', (datetime.now().isoformat(), company_id))
         conn.commit()
     
-    return emails_found, phones_found
+    return emails_found, phones_found, list(all_emails)
 
 
 def hunter_email_search(domain, company_number, company_id):
-    """Use Hunter.io domain search for emails"""
+    """Use Hunter.io domain search for emails. Returns (count, email_list)"""
     if not HUNTER_API_KEY or not domain:
-        return 0
+        return 0, []
     
     try:
         response = requests.get(
@@ -303,12 +341,20 @@ def hunter_email_search(domain, company_number, company_id):
         if response.status_code == 200:
             data = response.json()
             emails_found = 0
+            found_emails = []
+            
+            email_list = data.get('data', {}).get('emails', [])
+            
+            if not email_list:
+                return 0, []
             
             with get_db() as conn:
                 cursor = conn.cursor()
                 
-                for email_data in data.get('data', {}).get('emails', [])[:5]:
+                for email_data in email_list[:5]:
                     email = email_data.get('value', '').lower()
+                    if not email:
+                        continue
                     first_name = email_data.get('first_name', '')
                     last_name = email_data.get('last_name', '')
                     confidence = email_data.get('confidence', 0)
@@ -322,15 +368,22 @@ def hunter_email_search(domain, company_number, company_id):
                     
                     if cursor.rowcount > 0:
                         emails_found += 1
+                        found_emails.append(email)
                 
                 conn.commit()
             
-            return emails_found
+            return emails_found, found_emails
         
-        return 0
+        elif response.status_code == 429:
+            print(f"         ⚠️ Hunter rate limit! Waiting 60s...")
+            time.sleep(60)
+            return 0, []
+        else:
+            return 0, []
     
     except Exception as e:
-        return 0
+        print(f"         ⚠️ Hunter error: {e}")
+        return 0, []
 
 
 def update_company_status(company_id, has_directors, has_website, has_emails, has_phones):
@@ -357,24 +410,39 @@ def update_company_status(company_id, has_directors, has_website, has_emails, ha
     return status
 
 
-def print_stats():
+def print_stats(remaining=None):
     """Print current statistics"""
     elapsed = time.time() - stats['start_time'] if stats['start_time'] else 0
-    rate = stats['processed'] / elapsed * 3600 if elapsed > 0 else 0
+    rate = stats['processed'] / elapsed * 3600 if elapsed > 0 else 1000
+    
+    # Calculate ETA
+    eta_str = ""
+    if remaining and rate > 0:
+        hours_remaining = remaining / rate
+        if hours_remaining < 1:
+            eta_str = f"~{int(hours_remaining * 60)} min"
+        elif hours_remaining < 24:
+            eta_str = f"~{hours_remaining:.1f} hrs"
+        else:
+            eta_str = f"~{hours_remaining/24:.1f} days"
     
     print(f"\n{'─'*50}")
     print(f"📊 PROGRESS REPORT")
     print(f"{'─'*50}")
-    print(f"   Companies processed: {stats['processed']}")
-    print(f"   Skipped (already done): {stats['skipped']}")
-    print(f"   Directors found:     {stats['directors_found']}")
-    print(f"   Websites found:      {stats['websites_found']}")
-    print(f"   Emails found:        {stats['emails_found']}")
-    print(f"   Phones found:        {stats['phones_found']}")
-    print(f"   Hunter credits used: {stats['hunter_credits_used']}")
-    print(f"   Errors:              {stats['errors']}")
-    print(f"   Rate:                {rate:.1f} companies/hour")
+    print(f"   Companies processed: {stats['processed']:,}")
+    print(f"   Skipped (already done): {stats['skipped']:,}")
+    print(f"   Directors found:     {stats['directors_found']:,}")
+    print(f"   Websites found:      {stats['websites_found']:,}")
+    print(f"   Emails found:        {stats['emails_found']:,}")
+    print(f"   Phones found:        {stats['phones_found']:,}")
+    print(f"   Hunter credits used: {stats['hunter_credits_used']:,}")
+    print(f"   Errors:              {stats['errors']:,}")
+    print(f"{'─'*50}")
+    print(f"   Rate:                {rate:,.0f} companies/hour")
     print(f"   Elapsed:             {elapsed/60:.1f} minutes")
+    if remaining:
+        print(f"   Remaining:           {remaining:,} companies")
+        print(f"   ETA:                 {eta_str}")
     print(f"{'─'*50}")
 
 
@@ -384,16 +452,64 @@ def run_enrichment():
     
     stats['start_time'] = time.time()
     
+    # Get stats before starting
+    with get_db() as conn:
+        cursor = conn.cursor()
+        placeholders = ','.join(['?' for _ in FAVORITE_SICS])
+        
+        # Total in categories
+        cursor.execute(f'''
+            SELECT COUNT(*) FROM companies 
+            WHERE company_status = 'Active' AND sic_code_1 IN ({placeholders})
+        ''', tuple(FAVORITE_SICS))
+        total_in_categories = cursor.fetchone()[0]
+        
+        # Breakdown by status
+        cursor.execute(f'''
+            SELECT enrichment_status, COUNT(*) FROM companies 
+            WHERE company_status = 'Active' AND sic_code_1 IN ({placeholders})
+            GROUP BY enrichment_status
+        ''', tuple(FAVORITE_SICS))
+        status_breakdown = dict(cursor.fetchall())
+        
+        # To process
+        cursor.execute(f'''
+            SELECT COUNT(*) FROM companies 
+            WHERE company_status = 'Active' AND sic_code_1 IN ({placeholders})
+            AND (enrichment_status = 'not_attempted' OR enrichment_status IS NULL)
+        ''', tuple(FAVORITE_SICS))
+        to_process = cursor.fetchone()[0]
+    
+    # Estimate time (approx 1000/hour with API delays)
+    estimated_hours = to_process / 1000
+    
     print("\n" + "="*60)
     print("🚀 BACKGROUND ENRICHER STARTED")
     print("="*60)
     print(f"   Mode:        {'DRY RUN (no changes)' if dry_run else 'LIVE'}")
     print(f"   Hunter.io:   {'ENABLED' if use_hunter and HUNTER_API_KEY else 'DISABLED'}")
     print(f"   Limit:       {max_limit if max_limit else 'Unlimited'}")
-    print(f"   Favorite SICs: {', '.join(FAVORITE_SICS)}")
+    print(f"   SIC Codes:   {', '.join(FAVORITE_SICS)}")
     print(f"   Database:    {DB_PATH}")
     print(f"   CH API:      {'✅ Configured' if COMPANIES_HOUSE_API_KEY else '❌ Missing'}")
     print(f"   Hunter API:  {'✅ Configured' if HUNTER_API_KEY else '❌ Missing'}")
+    print("="*60)
+    print(f"   📊 CATEGORY TOTALS (Active companies)")
+    print(f"   Total in SIC categories:    {total_in_categories:,}")
+    print(f"   ├─ Success:                 {status_breakdown.get('success', 0):,}")
+    print(f"   ├─ Partial:                 {status_breakdown.get('partial', 0):,}")
+    print(f"   ├─ Failed:                  {status_breakdown.get('failed', 0):,}")
+    print(f"   └─ Not attempted:           {to_process:,}")
+    print("="*60)
+    print(f"   ⏱️  ESTIMATED TIME")
+    print(f"   To process:                 {to_process:,} companies")
+    print(f"   Rate:                       ~1,000/hour")
+    if estimated_hours < 1:
+        print(f"   Estimated completion:       ~{int(estimated_hours * 60)} minutes")
+    elif estimated_hours < 24:
+        print(f"   Estimated completion:       ~{estimated_hours:.1f} hours")
+    else:
+        print(f"   Estimated completion:       ~{estimated_hours/24:.1f} days")
     print("="*60)
     print("   Press Ctrl+C to stop gracefully")
     print("="*60 + "\n")
@@ -428,7 +544,18 @@ def run_enrichment():
                     AND (enrichment_status = 'not_attempted' OR enrichment_status IS NULL)
                 ''', tuple(FAVORITE_SICS))
                 total_to_process = cursor.fetchone()[0]
-            print(f"📋 Found {total_to_process:,} companies needing enrichment\n")
+                
+                # Also show already processed
+                cursor.execute(f'''
+                    SELECT enrichment_status, COUNT(*) FROM companies 
+                    WHERE company_status = 'Active' AND sic_code_1 IN ({placeholders})
+                    GROUP BY enrichment_status
+                ''', tuple(FAVORITE_SICS))
+                status_counts = dict(cursor.fetchall())
+            
+            print(f"📋 Target: {total_to_process:,} accountants/tax companies to enrich")
+            print(f"   Already done: {status_counts.get('success', 0):,} success, {status_counts.get('partial', 0):,} partial, {status_counts.get('failed', 0):,} failed")
+            print()
         
         for company in companies:
             if not running:
@@ -487,8 +614,9 @@ def run_enrichment():
                 has_website = True
             
             # 3. Scrape Emails & Phones
+            scraped_emails_list = []
             if website and not company['emails_fetched']:
-                emails, phones = scrape_emails_and_phones(website, company_number, company_id)
+                emails, phones, scraped_emails_list = scrape_emails_and_phones(website, company_number, company_id)
                 if emails > 0:
                     has_emails = True
                 if phones > 0:
@@ -496,23 +624,54 @@ def run_enrichment():
                 stats['emails_found'] += emails
                 stats['phones_found'] += phones
                 print(f"         ✓ Scraped: {emails} emails, {phones} phones")
+                for em in scraped_emails_list[:3]:  # Show first 3
+                    personal = "👤" if is_personal_email(em) else "📧"
+                    print(f"           {personal} {em}")
+                if len(scraped_emails_list) > 3:
+                    print(f"           ... and {len(scraped_emails_list) - 3} more")
             
-            # 4. Hunter Email Enrichment
+            # 4. Hunter Email Enrichment - check if we have PERSONAL emails
             if website and use_hunter and HUNTER_API_KEY:
                 with get_db() as conn:
                     cursor = conn.cursor()
-                    cursor.execute('SELECT COUNT(*) FROM emails WHERE company_number = ?', 
+                    cursor.execute('SELECT email FROM emails WHERE company_number = ?', 
                                    (company_number,))
-                    email_count = cursor.fetchone()[0]
+                    existing_emails = [row[0] for row in cursor.fetchall()]
                 
-                if email_count < 2:
-                    hunter_found = hunter_email_search(website, company_number, company_id)
+                # Count personal vs generic emails
+                personal_count = sum(1 for e in existing_emails if is_personal_email(e))
+                generic_count = len(existing_emails) - personal_count
+                
+                if personal_count >= 2:
+                    print(f"         ○ Hunter: skipped ({personal_count} personal emails found)")
+                elif len(existing_emails) >= 2 and personal_count == 0:
+                    print(f"         🔍 Trying Hunter (have {generic_count} generic emails, need personal)...")
+                    hunter_found, hunter_emails = hunter_email_search(website, company_number, company_id)
                     if hunter_found > 0:
                         has_emails = True
                         stats['emails_found'] += hunter_found
                         stats['hunter_credits_used'] += 1
                         print(f"         ✓ Hunter: {hunter_found} emails (1 credit)")
+                        for em in hunter_emails[:3]:
+                            print(f"           👤 {em}")
+                    else:
+                        print(f"         ○ Hunter: no emails found")
                     time.sleep(HUNTER_DELAY)
+                elif len(existing_emails) < 2:
+                    print(f"         🔍 Trying Hunter for {website}...")
+                    hunter_found, hunter_emails = hunter_email_search(website, company_number, company_id)
+                    if hunter_found > 0:
+                        has_emails = True
+                        stats['emails_found'] += hunter_found
+                        stats['hunter_credits_used'] += 1
+                        print(f"         ✓ Hunter: {hunter_found} emails (1 credit)")
+                        for em in hunter_emails[:3]:
+                            print(f"           👤 {em}")
+                    else:
+                        print(f"         ○ Hunter: no emails found")
+                    time.sleep(HUNTER_DELAY)
+                else:
+                    print(f"         ○ Hunter: skipped ({personal_count} personal + {generic_count} generic)")
             
             # Update enrichment status
             status = update_company_status(company_id, has_directors, has_website, has_emails, has_phones)
@@ -522,13 +681,14 @@ def run_enrichment():
             
             # Print summary every 25 companies
             if stats['processed'] % 25 == 0:
-                print_stats()
+                remaining = to_process - stats['processed']
+                print_stats(remaining)
         
         # Small pause between batches
         if running:
             time.sleep(0.5)
     
-    print_stats()
+    print_stats(to_process - stats['processed'])
     print("\n🏁 Enrichment process finished!\n")
 
 
