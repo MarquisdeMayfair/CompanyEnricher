@@ -150,8 +150,13 @@ def upload_to_gdrive():
     """Upload database to Google Drive using rclone or simple HTTP"""
     import subprocess
     import shutil
+    import threading
     
-    print("\n☁️  Uploading database to Google Drive...")
+    # Get file size for progress
+    db_size = os.path.getsize(DB_PATH)
+    db_size_mb = db_size / (1024 * 1024)
+    
+    print(f"\n☁️  Uploading database to Google Drive ({db_size_mb:.1f} MB)...")
     
     # Rclone path - check custom path first, then system PATH
     rclone_paths = [
@@ -168,6 +173,20 @@ def upload_to_gdrive():
     # Method 1: Try rclone (if installed)
     if rclone_cmd:
         try:
+            # Progress indicator while rclone runs
+            upload_complete = threading.Event()
+            
+            def show_progress():
+                spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+                idx = 0
+                while not upload_complete.is_set():
+                    print(f"\r   {spinner[idx]} Uploading {db_size_mb:.1f} MB...", end='', flush=True)
+                    idx = (idx + 1) % len(spinner)
+                    upload_complete.wait(0.1)
+            
+            progress_thread = threading.Thread(target=show_progress, daemon=True)
+            progress_thread.start()
+            
             result = subprocess.run([
                 rclone_cmd, 'copy', 
                 DB_PATH, 
@@ -175,26 +194,48 @@ def upload_to_gdrive():
                 '--progress'
             ], capture_output=True, text=True)
             
+            upload_complete.set()
+            progress_thread.join(timeout=0.5)
+            print("\r" + " " * 50 + "\r", end='')  # Clear the line
+            
             if result.returncode == 0:
-                print("✅ Database uploaded to Google Drive: CompanyEnricher/companies.db")
+                print(f"✅ Database uploaded to Google Drive: CompanyEnricher/companies.db ({db_size_mb:.1f} MB)")
                 return True
             else:
                 print(f"⚠️ rclone error: {result.stderr}")
         except Exception as e:
             print(f"⚠️ rclone failed: {e}")
     
-    # Method 2: Create timestamped copy for manual upload
+    # Method 2: Create timestamped copy for manual upload (with progress)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_name = f"companies_enriched_{timestamp}.db"
     backup_path = os.path.join(os.path.dirname(DB_PATH), backup_name)
     
     try:
-        shutil.copy2(DB_PATH, backup_path)
+        print(f"   📦 Creating backup copy...")
+        
+        # Copy with progress
+        chunk_size = 1024 * 1024  # 1MB chunks
+        copied = 0
+        with open(DB_PATH, 'rb') as src, open(backup_path, 'wb') as dst:
+            while True:
+                chunk = src.read(chunk_size)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                copied += len(chunk)
+                progress = (copied / db_size) * 100
+                bar_width = 30
+                filled = int(bar_width * copied / db_size)
+                bar = '█' * filled + '░' * (bar_width - filled)
+                print(f"\r   [{bar}] {progress:.0f}%", end='', flush=True)
+        
+        print()  # New line after progress bar
         print(f"📁 Database backed up to: {backup_name}")
         print(f"   Upload this file manually to Google Drive")
         return True
     except Exception as e:
-        print(f"❌ Backup failed: {e}")
+        print(f"\n❌ Backup failed: {e}")
         return False
 
 
@@ -288,6 +329,14 @@ def find_website(company_name, company_number, company_id):
     clean_name = re.sub(r'[^a-zA-Z0-9]', '', company_name.lower())
     clean_name = re.sub(r'(ltd|limited|plc|llp|uk|group|holdings|services|consulting)$', '', clean_name)
     
+    # IDNA labels cannot exceed 63 characters - truncate to be safe
+    if len(clean_name) > 60:
+        clean_name = clean_name[:60]
+    
+    # Skip if name is too short after cleaning
+    if len(clean_name) < 3:
+        return False, "Name too short for domain guessing"
+    
     # Domain patterns to try
     patterns = [
         f"{clean_name}.co.uk",
@@ -297,6 +346,9 @@ def find_website(company_name, company_number, company_id):
     
     for domain in patterns:
         try:
+            # Additional safety check for total domain length
+            if len(domain) > 253:
+                continue
             socket.gethostbyname(domain)
             # Domain exists, save it
             with get_db() as conn:
@@ -308,6 +360,9 @@ def find_website(company_name, company_number, company_id):
                 conn.commit()
             return True, domain
         except socket.gaierror:
+            continue
+        except UnicodeError:
+            # IDNA encoding failed (e.g., label too long) - skip this pattern
             continue
     
     # Mark as attempted even if not found
@@ -334,15 +389,21 @@ def scrape_emails_and_phones(domain, company_number, company_id):
     phones_found = 0
     all_emails = set()
     
-    # Pages to check
-    pages = ['', '/contact', '/about', '/contact-us', '/about-us']
+    # Pages to check - keep it focused for speed
+    pages = ['', '/contact', '/about', '/contact-us', '/about-us', '/team']
+    
+    # Better browser headers
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-GB,en;q=0.9',
+        'Connection': 'close',
+    }
     
     for page in pages:
         try:
             url = f"https://{domain}{page}"
-            response = requests.get(url, timeout=5, headers={
-                'User-Agent': 'Mozilla/5.0 (compatible; CompanyEnricher/1.0)'
-            })
+            response = requests.get(url, timeout=10, headers=headers)
             
             if response.status_code != 200:
                 continue
@@ -353,9 +414,13 @@ def scrape_emails_and_phones(domain, company_number, company_id):
             email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
             emails = set(re.findall(email_pattern, text))
             
-            # Filter out common junk
-            emails = [e.lower().strip() for e in emails if not any(x in e.lower() for x in 
-                ['example', 'test', 'sample', 'wixpress', 'sentry', 'cloudflare', 'w3.org'])]
+            # Filter out common junk and image files (like logo@2x.png)
+            junk_patterns = ['example', 'test', 'sample', 'wixpress', 'sentry', 'cloudflare', 'w3.org']
+            image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.bmp', '.tiff']
+            emails = [e.lower().strip() for e in emails 
+                      if not any(x in e.lower() for x in junk_patterns)
+                      and not any(e.lower().endswith(ext) for ext in image_extensions)
+                      and '@' in e and not e.startswith('@')]
             
             all_emails.update(emails)
             
@@ -724,6 +789,23 @@ def run_phase(phase_name, sic_codes, to_process):
     return not hunter_credits_exhausted and running
 
 
+def get_next_company_to_process():
+    """Get the name of the next company that will be processed (for resume info)"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        placeholders = ','.join(['?' for _ in FAVORITE_SICS])
+        cursor.execute(f'''
+            SELECT company_name FROM companies
+            WHERE company_status = 'Active'
+            AND sic_code_1 IN ({placeholders})
+            AND (enrichment_status = 'not_attempted' OR enrichment_status IS NULL)
+            ORDER BY company_name ASC
+            LIMIT 1
+        ''', tuple(FAVORITE_SICS))
+        result = cursor.fetchone()
+        return result[0] if result else None
+
+
 def run_enrichment():
     """Main enrichment loop - processes all SIC phases in order"""
     global running, hunter_credits_exhausted, current_phase_index, FAVORITE_SICS
@@ -743,6 +825,12 @@ def run_enrichment():
     print("   📋 ENRICHMENT PHASES (in order):")
     for i, phase in enumerate(SIC_PHASES):
         print(f"      Phase {i+1}: {phase['name']} ({', '.join(phase['codes'])})")
+    
+    # Show resume point
+    next_company = get_next_company_to_process()
+    if next_company:
+        print("="*60)
+        print(f"   ▶️  RESUMING FROM: {next_company}")
     print("="*60)
     print("   Press Ctrl+C to stop gracefully")
     print("="*60 + "\n")

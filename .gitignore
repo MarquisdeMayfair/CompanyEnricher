@@ -25,4 +25,8 @@ Thumbs.db
 # Test files
 static/test-upload.html
 
-companies.db
+# Database files
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
